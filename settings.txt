@@ -1,0 +1,12 @@
+# ==========================================================
+# THE JEDI FACTION — site settings
+# Edit this file freely (any editor is safe). key=value, one per line.
+# Leave DB_* blank to use the automatic SQLite file (jf.sqlite).
+# ==========================================================
+DB_HOST=localhost
+DB_NAME=
+DB_USER=
+DB_PASS=
+BOT_TOKEN=
+KOC_ADMIN_NAME=
+DISCORD_WEBHOOK=
