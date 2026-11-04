@@ -2,7 +2,7 @@
 // @name        JFWarScout
 // Built by Jedi Faction. Free for allied use with attribution.
 // @namespace   https://www.kingsofchaos.com/
-// @version     9.1.21a
+// @version     9.2.21a
 // @default      JFWarScout v9.0.0 — paste this entire build into Stay/Tampermonkey as-is.
 // @author      Jedi Faction
 // @description Jedi Faction shared recon, compact Sab Advisor, war stats and trackers. One script for Stay and Tampermonkey.
@@ -11,8 +11,6 @@
 // @include     https://www.kingsofchaos.com/*
 // @include     https://kingsofchaos.com/*
 // @run-at      document-end
-// @connect     jsonblob.com
-// @connect     api.github.com
 // @connect     jfactiongaming.com
 // @updateURL    https://jfactiongaming.com/jfwarscout.user.js
 // @downloadURL  https://jfactiongaming.com/jfwarscout.user.js
@@ -38,11 +36,7 @@
 
   var CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
   var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout2.user.js';
-  var ALLIANCE_SHARE = "jedi-faction-era23";
   var currentVersion = GM_info.script.version;
-  var SHARE_MODE = "site"; // "site" (faction domain, permanent) | "jsonblob" | "gist"
-  var GIST_ID = "";
-  var GIST_TOKEN = "";
   var SITE_PUSH = "https://jfactiongaming.com/warscout2_api.php";
   var SITE_TOKEN = "";
   try { SITE_TOKEN = typeof GM_getValue === "function" ? GM_getValue("JF_SCRIPT_ACCESS_KEY", "") : ""; } catch (e) {}
@@ -107,7 +101,7 @@
   }
 
   var DAY = 24 * 60 * 60 * 1000;
-  // In-memory only; redirects existing harvest calls directly to network push
+  // Live in-memory only: no disk persistence
   var state = { targets: {}, histlog: {}, tiv: {}, weapons: {}, nameid: {}, me: {} };
   function save() {
     if (typeof scheduleShare === "function") scheduleShare();
@@ -206,7 +200,8 @@
   }
 
   function sideCalc() {
-    if (document.getElementById("jf-side")) return;
+    var existing = document.getElementById("jf-side");
+    if (existing) existing.remove();
     var rank = findHeader("Rank:");
     if (!rank) {
       var nodes = document.querySelectorAll("td, div");
@@ -240,7 +235,8 @@
   function warStats() {
     var id = statsId();
     if (!id) return;
-    if (document.getElementById("jf-war")) return;
+    var existing = document.getElementById("jf-war");
+    if (existing) existing.remove();
     var sri = findHeaderPrefix("Shared Recon Info");
     var recent = findHeaderPrefix("Recent Battles") || findHeader("Recent Battles");
     var style = headerStyle(sri || recent);
@@ -1186,7 +1182,8 @@
   function targetHistory() {
     var id = statsId();
     if (!id) return;
-    if (document.getElementById("jf-hist")) return;
+    var existing = document.getElementById("jf-hist");
+    if (existing) existing.remove();
     var F8 = ["sa", "da", "spy", "sentry", "poison", "antidote", "theft", "vigilance"];
     var NAMES = { sa: "SA", da: "DA", spy: "Spy", sentry: "Sentry", poison: "Poison", antidote: "Antidote", theft: "Theft", vigilance: "Vigilance" };
     var LABELS = { sa: "Strike Action", da: "Defensive Action", spy: "Spy Rating", sentry: "Sentry Rating", poison: "Poison Rating", antidote: "Antidote Rating", theft: "Theft Rating", vigilance: "Vigilance Rating" };
@@ -1369,22 +1366,32 @@
   }
 
   function jfTivRanking(pool, now) {
+    var cutoff = now - 30 * 86400000;
     var rows = Object.keys(pool || {}).map(function (k) { return pool[k]; })
-      .filter(function (r) { return r && typeof r.invested === "number" && isFinite(r.invested) && r.invested >= 0 && !(r.at && r.at < now - 30 * 86400000); });
-    var byName = {};
+      .filter(function (r) {
+        if (!r || typeof r.invested !== "number" || !isFinite(r.invested) || r.invested <= 0) return false;
+        var t = Number(r.at || 0);
+        return t === 0 || t >= cutoff;
+      });
+    var byKey = {};
     for (var d = 0; d < rows.length; d++) {
-      var nk = (rows[d].name || rows[d].id || "").toLowerCase();
-      if (!Object.prototype.hasOwnProperty.call(byName,nk) || (rows[d].at || 0) >= (byName[nk].at || 0)) Object.defineProperty(byName,nk,{value:rows[d],writable:true,enumerable:true,configurable:true});
+      var r = rows[d];
+      var nk = String(r.name || r.id || ("#" + d)).trim().toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(byKey, nk) || (Number(r.at) || 0) >= (Number(byKey[nk].at) || 0)) {
+        byKey[nk] = r;
+      }
     }
-    rows = Object.keys(byName).map(function (k) { return byName[k]; });
+    rows = Object.keys(byKey).map(function (k) { return byKey[k]; });
     rows.sort(function (a, b) { return b.invested - a.invested; });
-    var total = 0;for (var i = 0; i < rows.length; i++) total += rows[i].invested;
-    return {top:rows.slice(0,20),total:total,count:rows.length};
+    var total = 0;
+    for (var i = 0; i < rows.length; i++) total += rows[i].invested;
+    return { top: rows.slice(0, 20), total: total, count: rows.length };
   }
 
   function tivTracker() {
     if (!/base\.php/i.test(location.pathname)) return;
-    if (document.getElementById("jf-tiv")) return;
+    var existing = document.getElementById("jf-tiv");
+    if (existing) existing.remove();
     var ranking=jfTivRanking(state.tiv,Date.now()),top=ranking.top,total=ranking.total;
     var rows={length:ranking.count};
     function money(n) {
@@ -1568,10 +1575,9 @@
   var jfCheckSerial = 0;
   function jfAccessError(status, text) {
     var reply = null; try { reply = JSON.parse(text); } catch (e) {}
-    if (status === 401 && reply && reply.error === "Script key is invalid or member access was removed.") return "Membership: HTTP 401 — website rejected key or member approval";
-    if (status === 403 && reply && reply.error === "Origin not permitted.") return "Membership: HTTP 403 — browser request origin blocked";
-    if (status === 403 && reply && reply.error === "This key only permits WarScout intel sharing.") return "Membership: HTTP 403 — upload warscout_api2.php membership update";
-    return "Membership: HTTP " + status + " — request blocked; check website/Cloudflare response";
+    if (status === 401 && reply && reply.error) return "Membership: " + reply.error;
+    if (status === 403 && reply && reply.error) return "Membership: " + reply.error;
+    return "Membership: verification unavailable (HTTP " + status + ")";
   }
   function jfLock(message) {
     var wasRunning = jfStarted;
@@ -1590,7 +1596,6 @@
     if (!SITE_TOKEN) { jfLock("Membership: personal key required"); return; }
     httpJson("POST", SITE_PUSH, { action: "membership_check" }, function (status, text) {
       if (serial !== jfCheckSerial) return;
-        console.log("[JFWarScout Membership Check]", { status: status, responseText: text });
       var result = null; try { result = JSON.parse(text); } catch (e) {}
       if (status === 200 && result && result.ok && result.approved === true) {
         jfApprovalAt = Date.now();
@@ -1602,7 +1607,7 @@
         jfShowSync("Sharing: connected; offline, retrying verification");
         jfMembershipTimer = setTimeout(jfCheckMembership, Math.min(60000, jfApprovalTTL - (Date.now() - jfApprovalAt)));
       } else {
-        jfLock(status === 401 || status === 403 ? jfAccessError(status, text) : "Membership: verification unavailable; script paused (HTTP " + status + ")");
+        jfLock(status === 401 || status === 403 ? jfAccessError(status, text) : "Membership: verification unavailable (HTTP " + status + ")");
         if (!jfStarted) jfMembershipTimer = setTimeout(jfCheckMembership, 60000);
       }
     }, { "X-JF-Script-Key": SITE_TOKEN });
@@ -1649,35 +1654,44 @@
   }
 
   function httpJson(method, url, body, done, headers) {
-    var finished = false, fallbackStarted = false;
+    var finished = false;
     function complete(status, text) {
       if (finished) return;
       finished = true;
       if (done) done(status, text);
     }
-    var h = { "Content-Type": "application/json", "Accept": "application/json" };
+    var h = {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    };
     if (headers) Object.keys(headers).forEach(function (k) { h[k] = headers[k]; });
     var data = body ? JSON.stringify(body) : undefined;
-    function browserFallback() {
-      if (finished || fallbackStarted) return;
-      fallbackStarted = true;
-      if (url !== SITE_PUSH || typeof fetch !== "function" || typeof AbortController !== "function") { complete(0, ""); return; }
-      var controller = new AbortController();
-      var timer = setTimeout(function () { controller.abort(); complete(0, ""); }, 30000);
-      try {
-        fetch(url, { method: method, headers: h, body: data, credentials: "omit", cache: "no-store", signal: controller.signal })
-          .then(function (response) { return response.text().then(function (text) { complete(response.status, text); }); })
-          .catch(function () { complete(0, ""); })
-          .then(function () { clearTimeout(timer); });
-      } catch (e) { clearTimeout(timer); complete(0, ""); }
-    }
+
+    // Use GM_xmlhttpRequest exclusively to avoid browser CORS/fetch redirects
     if (typeof GM_xmlhttpRequest === "function") {
       try {
-        GM_xmlhttpRequest({ method: method, url: url, headers: h, anonymous: true, timeout: 30000, data: data,
-          ontimeout: browserFallback, onerror: browserFallback,
-          onload: function (res) { if (!res.status) browserFallback(); else if (!fallbackStarted) complete(res.status, res.responseText); } });
-      } catch (e) { browserFallback(); }
-    } else browserFallback();
+        GM_xmlhttpRequest({
+          method: method,
+          url: url,
+          headers: h,
+          timeout: 30000,
+          data: data,
+          ontimeout: function () { complete(0, ""); },
+          onerror: function () { complete(0, ""); },
+          onload: function (res) {
+            complete(res.status, res.responseText || "");
+          }
+        });
+        return;
+      } catch (e) {}
+    }
+
+    // Direct browser fetch fallback (for environments without GM_xmlhttpRequest)
+    try {
+      fetch(url, { method: method, headers: h, body: data, credentials: "omit", cache: "no-store" })
+        .then(function (response) { return response.text().then(function (text) { complete(response.status, text); }); })
+        .catch(function () { complete(0, ""); });
+    } catch (e2) { complete(0, ""); }
   }
 
   function boardPack() {
@@ -1720,6 +1734,7 @@
     if (!jfAuthorized) { if (done) done(); return; }
     if (!SITE_TOKEN) { jfShowSync("Sharing: not connected"); if (done) done(); return; }
     httpJson("POST", SITE_PUSH, { action: "warscout_pull" }, function (status, text) {
+        console.log("[WARSCOUT PULL RAW]", { status: status, text: text });
       if (!jfAuthorized) return;
       if (status >= 200 && status < 300 && text) {
         try {
@@ -1727,6 +1742,13 @@
           if (parsed && parsed.ok && parsed.board) {
             mergeBoard(parsed.board);
             jfShowSync(jfLastUpload || "Sharing: connected; upload pending");
+
+            // Re-render trackers with newly fetched database contents
+            safe(tivTracker);
+            safe(sideCalc);
+            safe(targetHistory);
+            safe(warStats);
+            safe(sabAdvisor);
           } else {
             jfShowSync("Sharing: unexpected server response");
           }
