@@ -18,6 +18,7 @@
 // @downloadURL  https://jfactiongaming.com/jfwarscout.user.js
 // @grant       GM_getValue
 // @grant       GM_setValue
+// @grant       GM_deleteValue
 // @grant       GM_addStyle
 // @grant       GM_xmlhttpRequest
 // @grant       GM_registerMenuCommand
@@ -25,31 +26,30 @@
 
 (function () {
   "use strict";
+
+  // Purge any preexisting storage key once on script execution
+  try { localStorage.removeItem("jedi_board_v7"); } catch (e) {}
+  try { if (typeof GM_deleteValue === "function") GM_deleteValue("jedi_board_v7"); } catch (e) {}
+
   // Keep setup controls and styling off login/security and protected list pages.
   if (/\/(?:login|confirm\.login|security)\.php/i.test(location.pathname)) return;
 
   var jfStatusOnly = /\/(?:warlist|farmlist)\.php/i.test(location.pathname);
 
-  var KEY = "jedi_board_v7";
   var CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
   var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout2.user.js';
   var ALLIANCE_SHARE = "jedi-faction-era23";
   var currentVersion = GM_info.script.version;
-  // Sync backend. "jsonblob" (default, free but not permanent) or "gist"
-  // (permanent, faction-controlled). For gist: create a SECRET gist with one
-  // file named jf-board.json containing {}, then paste its ID and a classic
-  // PAT with only the "gist" scope below.
   var SHARE_MODE = "site"; // "site" (faction domain, permanent) | "jsonblob" | "gist"
   var GIST_ID = "";
   var GIST_TOKEN = "";
-  // Jedi Faction domain bridge — pushes every sync to the faction site (permanent archive).
-  // Personal script keys come from https://jfactiongaming.com/script-access.php .
-  var SITE_PUSH = "https://jfactiongaming.com/warscout_api.php";
+  var SITE_PUSH = "https://jfactiongaming.com/warscout2_api.php";
   var SITE_TOKEN = "";
   try { SITE_TOKEN = typeof GM_getValue === "function" ? GM_getValue("JF_SCRIPT_ACCESS_KEY", "") : ""; } catch (e) {}
   var jfSyncText = SITE_TOKEN ? "Sharing: connecting…" : "Sharing: not connected";
   var jfLastUpload = null;
   var jfTransferStatus = null;
+
   function jfShowSync(message) {
     if (/^Sharing: (upload |connected; sync unavailable|unexpected server response)/.test(message)) jfTransferStatus = message;
     if (/^Sharing: last upload/.test(message)) jfTransferStatus = null;
@@ -61,6 +61,7 @@
       if (button) button.textContent = jfAuthorized || /^Sharing: (connected|last upload)/.test(message) ? "Change sharing key" : "Connect Jedi sharing";
     }
   }
+
   function jfConnectSharing() {
     var key = prompt("Paste your personal script key from jfactiongaming.com/script-access.php. Never enter your KoC password or a bot token.");
     if (key === null) return;
@@ -73,6 +74,7 @@
     jfShowSync("Sharing: connecting…");
     jfCheckMembership();
   }
+
   function jfPlaceInfo() {
     var anchor = document.getElementById("jf-side");
     if (!anchor) {
@@ -91,6 +93,7 @@
       anchor = box;
     });
   }
+
   function jfSharingControls() {
     if (document.getElementById("jf-sharing-status")) { jfPlaceInfo(); return; }
     var box = document.createElement("div"); box.id = "jf-sharing-status";
@@ -102,45 +105,13 @@
     jfPlaceInfo();
     if (typeof GM_registerMenuCommand === "function") GM_registerMenuCommand("Connect Jedi sharing", jfConnectSharing);
   }
-  var DAY = 24 * 60 * 60 * 1000;
-  var state = { targets: {}, histlog: {}, tiv: {}, weapons: {} };
 
-  function read() {
-    try {
-      if (typeof GM_getValue === "function") return JSON.parse(GM_getValue(KEY, "{}"));
-    } catch (e) {}
-    try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e2) { return {}; }
-  }
-  function prune() {
-    var seen=state.reconSeen||{};
-    state.reconSeen={};Object.keys(seen).filter(function(k){return /^\d+$/.test(k)&&seen[k]>0&&seen[k]>=Date.now()-30*DAY;}).sort(function(a,b){return seen[b]-seen[a];}).slice(0,2000).forEach(function(k){state.reconSeen[k]=seen[k];});
-    var cutoff = Date.now() - DAY;
-    var hkeys = Object.keys(state.histlog || {});
-    for (var hk = 0; hk < hkeys.length; hk++) {
-      state.histlog[hkeys[hk]] = (state.histlog[hkeys[hk]] || []).filter(function (r) { return r && r.at && r.at >= cutoff - DAY; });
-    }
-    var tkeys = Object.keys(state.tiv || {});
-    for (var tk = 0; tk < tkeys.length; tk++) {
-      if (state.tiv[tkeys[tk]] && state.tiv[tkeys[tk]].at && state.tiv[tkeys[tk]].at < Date.now() - 30 * DAY) delete state.tiv[tkeys[tk]];
-    }
-  }
+  var DAY = 24 * 60 * 60 * 1000;
+  // In-memory only; redirects existing harvest calls directly to network push
+  var state = { targets: {}, histlog: {}, tiv: {}, weapons: {}, nameid: {}, me: {} };
   function save() {
-    prune();
-    var raw = JSON.stringify(state);
-    try { if (typeof GM_setValue === "function") GM_setValue(KEY, raw); } catch (e) {}
-    try { localStorage.setItem(KEY, raw); } catch (e2) {}
     if (typeof scheduleShare === "function") scheduleShare();
   }
-  state = Object.assign(state, read());
-  var jfHadLossHistory = Object.prototype.hasOwnProperty.call(state, "stolen") || Object.prototype.hasOwnProperty.call(state, "lossLogAt");
-  delete state.stolen; delete state.lossLogAt;
-  if (!state.targets) state.targets = {};
-  if (!state.histlog) state.histlog = {};
-  if (!state.tiv) state.tiv = {};
-  if (!state.weapons) state.weapons = {};
-  if (!state.nameid) state.nameid = {};
-  if (!state.me) state.me = {};
-  if (jfHadLossHistory) save();
 
   function themeColors() {
     function sample(el) {
@@ -161,23 +132,23 @@
     }
     return { bg: "#fff", fg: "#000" };
   }
+
   var THEME = themeColors();
   var jfCss =
-    
       ".jf-block{width:100%;border-collapse:collapse;margin:6px 0;background:" + THEME.bg + ";color:" + THEME.fg + "}" +
       ".jf-block td{padding:5px 6px;border-top:1px solid #777;text-align:left;color:" + THEME.fg + ";background:" + THEME.bg + "}" +
       ".jf-h{font-weight:700;text-align:center;padding:6px;color:#fff}" +
       ".jf-input{width:88px;text-align:right;color:" + THEME.fg + ";background:" + THEME.bg + ";border:1px solid #777}" +
       ".jf-ok{color:#0b6b32;font-weight:700}.jf-no{color:#9b1c1c;font-weight:700}";
-  function jfApplyStyle() {
-  if (typeof GM_addStyle === "function") {
-    GM_addStyle(jfCss);
-  } else {
-    var jfStyleTag = document.createElement("style");
-    jfStyleTag.textContent = jfCss;
-    (document.head || document.documentElement).appendChild(jfStyleTag);
-  }
 
+  function jfApplyStyle() {
+    if (typeof GM_addStyle === "function") {
+      GM_addStyle(jfCss);
+    } else {
+      var jfStyleTag = document.createElement("style");
+      jfStyleTag.textContent = jfCss;
+      (document.head || document.documentElement).appendChild(jfStyleTag);
+    }
   }
 
   function num(v) {
@@ -247,7 +218,6 @@
     var turns = labeled("Turns");
     if (!turns && state.me && state.me.turns) turns = num(state.me.turns);
     if (!xp && state.me && state.me.xp) xp = num(state.me.xp);
-    save();
     var attacks = Math.floor(turns / 120);
     var tradeTurns = Math.floor(xp / 1425) * 500;
     var tradeAttacks = Math.floor(tradeTurns / 120);
@@ -312,9 +282,9 @@
     else document.body.insertBefore(box, document.body.firstChild);
   }
 
-
   var jfWeaponCategories = {"sarumans ball":"sa","heavy steed":"sa","chariot":"sa","blackpowder missile":"sa","spider":"da","mithril":"da","ebony platemail":"da","invisibility shield":"da","cloak":"spy","grappling hook":"spy","skeleton key":"spy","nunchaku":"spy","horn":"sentry","tripwire":"sentry","guard dog":"sentry","lookout tower":"sentry","toxic needle dagger":"poison","venomfang staff":"poison","blightbane bow":"poison","plaguebringer scythe":"poison","viperfang dirk":"antidote","basiliskbane halberd":"antidote","wyrmclaw longsword":"antidote","serpentbane arbalest":"antidote","greasy gloves":"theft","rusty lockpick":"theft","shadow cloak":"theft","ethereal grasp":"theft","wooden whistle":"vigilance","steel shackles":"vigilance","silver scepter":"vigilance","adamantine bastion":"vigilance"};
   var jfWeaponMaxima = {"sarumans ball":1,"heavy steed":100,"chariot":600,"blackpowder missile":1000,"spider":10,"mithril":100,"ebony platemail":600,"invisibility shield":1000,"cloak":140,"grappling hook":250,"skeleton key":600,"nunchaku":1000,"horn":140,"tripwire":250,"guard dog":600,"lookout tower":1000,"toxic needle dagger":140,"venomfang staff":250,"blightbane bow":600,"plaguebringer scythe":1000,"viperfang dirk":140,"basiliskbane halberd":250,"wyrmclaw longsword":600,"serpentbane arbalest":1000,"greasy gloves":140,"rusty lockpick":250,"shadow cloak":600,"ethereal grasp":1000,"wooden whistle":140,"steel shackles":250,"silver scepter":600,"adamantine bastion":1000};
+
   function jfRecognizeWeapon(category,maximum) {
     if(!category||!(maximum>0))return null;
     var names=Object.keys(jfWeaponCategories).filter(function(name){return jfWeaponCategories[name]===category&&jfWeaponMaxima[name]===maximum;});
@@ -394,7 +364,7 @@
       }
     }
     if(!found)return;
-    if(/^\d+$/.test(report||''))state.reconSeen[report]=at;
+    if(/^\d+$/.test(report||''))state.reconSeen=state.reconSeen||{};
     Object.keys(blocked).forEach(function(f){delete sums[f];});
     var detail={equipment:eq,weapons:sums,wat:at,fieldAt:{}};
     if(nm)detail.name=nm[1];
@@ -403,6 +373,7 @@
     if(nm){var observation=Object.assign({},sums,{at:at,fieldAt:{}});Object.keys(sums).forEach(function(f){observation.fieldAt[f]=at;});state.weapons[nm[1].toLowerCase()]=jfMergeTarget(state.weapons[nm[1].toLowerCase()],observation);}
     save();
   }
+
   var jfStatFields = ["sa", "da", "spy", "sentry", "poison", "antidote", "theft", "vigilance"];
   function jfFieldTime(row, field, family) {
     var key = family ? family + "." + field : field;
@@ -415,7 +386,6 @@
     old = old || {}; incoming = incoming || {};
     var out = Object.assign({}, old);
     out.fieldAt = Object.assign({}, old.fieldAt || {});
-    // Freeze legacy field timestamps before a different field advances row.at.
     [null, "tech", "units", "weapons"].forEach(function (family) {
       var before = family ? old[family] || {} : old;
       var next = family ? incoming[family] || {} : incoming;
@@ -612,7 +582,8 @@
     var usedMatch=bodyText().replace(/\s+/g," ").match(/Total lost from sab(?:b)?s? in (?:the )?last\s*24\s*hours:\s*\(?([0-9][0-9,]*)\)?/i);
     var cap={value:value,at:Date.now()};
     if(usedMatch){var used=Number(usedMatch[1].replace(/,/g,""));if(Number.isSafeInteger(used)&&used>=0)cap.used=used;}
-    state.targets[id]=jfMergeTarget(state.targets[id],{sabCap:cap});save();
+    state.targets[id]=jfMergeTarget(state.targets[id],{sabCap:cap});
+    save();
   }
   function jfSabImpact(rating, weaponValue, cap) {
     if(typeof rating!=="number"||rating<0||!weaponValue||weaponValue.partial||!(weaponValue.value>0)||typeof cap!=="number"||!isFinite(cap)||cap<0)return null;
@@ -661,7 +632,6 @@
         update[category]=value;update.fieldAt[category]=update.at;update.statRanks[category]={value:rank,at:update.at};found=true;
       }
     }
-    // Preserve displayed adjacent rating values as context, not invented player identities/ranks.
     if(found)for(var t=0;t<tables.length;t++) {
       var rows=tables[t].querySelectorAll("tr"),cols=null;
       for(var r=0;r<rows.length;r++) {
@@ -677,7 +647,11 @@
         update.statRanks[category].previousRating=before;update.statRanks[category].nextRating=after;
       }
     }
-    if(found){if(owner.name){update.name=owner.name;update.id=id;state.nameid[owner.name.toLowerCase()]=id;}state.targets[id]=jfMergeTarget(state.targets[id],update);save();}
+    if(found){
+      if(owner.name){update.name=owner.name;update.id=id;state.nameid[owner.name.toLowerCase()]=id;}
+      state.targets[id]=jfMergeTarget(state.targets[id],update);
+      save();
+    }
   }
   function jfFreshCategory(row,category,now) {
     var rank=row&&row.statRanks&&row.statRanks[category],rating=row&&row[category],stamp=row&&jfFieldTime(row,category);
@@ -715,7 +689,6 @@
       if((target.name&&identity===target.name.toLowerCase())||seen[identity])return;
       seen[identity]=true;
       var rank=row.statRanks[category].value,rating=row[category];
-      // Discard contradictory rank/rating pairs rather than fabricating thresholds.
       if(rank<=start||rating>=target[category])return;
       peers.push({rank:rank,rating:rating});
     });
@@ -725,7 +698,6 @@
       samples++;
       if(after<peer.rating){minRank=Math.max(minRank,peer.rank);crossed++;}
       else if(after>peer.rating)maxRank=maxRank===null?peer.rank-1:Math.min(maxRank,peer.rank-1);
-      // Equality may invoke undocumented tie rules, so it never proves a crossing.
     });
     if(!samples||maxRank!==null&&minRank>maxRank)return null;
     return {low:minRank-start,high:maxRank===null?null:Math.max(0,maxRank-start),crossed:crossed,samples:samples};
@@ -735,8 +707,6 @@
     if(String(id)===String(rivalId)||!loss)return null;
     var targetSum=jfCategoryRankSum(target,now),rivalSum=jfCategoryRankSum(rival,now);
     if(targetSum===null||rivalSum===null||after===rival[category]||target[category]===rival[category])return null;
-    // If the target crosses the contender in this category, the contender gains
-    // one category-rank place as well. Other players/ratings are held fixed.
     var passed=target[category]>rival[category]&&after<rival[category];
     var adjusted=rivalSum-(passed?1:0),need=Math.max(0,adjusted-targetSum+1);
     return {targetSum:targetSum,rivalSum:adjusted,needed:need,possible:loss.high===null||loss.high>=need,supported:loss.low>=need};
@@ -765,461 +735,436 @@
     rows.sort(function(a,b){var av=a.loss?a.loss.low:-1,bv=b.loss?b.loss.low:-1;return bv-av;});
     return {budget:budget,maximum:maximum,remainingKnown:remainingKnown,rows:rows};
   }
+
   var jfCombinationPlanner=null;
   function jfCreateCombinationPlanner(){
-const Lab = (() => {
-  const DAY=86400000, WINDOW=30*DAY, FIELDS=['sa','da','spy','sentry','poison','antidote','theft','vigilance'];
-  const LABELS={sa:'SA',da:'DA',spy:'Spy',sentry:'Sentry',poison:'Poison',antidote:'Antidote',theft:'Theft',vigilance:'Vigilance'};
-  const CATALOG={"sarumans ball":{"category":"sa","price":100,"strength":1},"heavy steed":{"category":"sa","price":50000,"strength":100},"chariot":{"category":"sa","price":450000,"strength":600},"blackpowder missile":{"category":"sa","price":1000000,"strength":1000},"spider":{"category":"da","price":5000,"strength":10},"mithril":{"category":"da","price":50000,"strength":100},"ebony platemail":{"category":"da","price":450000,"strength":600},"invisibility shield":{"category":"da","price":1000000,"strength":1000},"cloak":{"category":"spy","price":140000,"strength":140},"grappling hook":{"category":"spy","price":250000,"strength":250},"skeleton key":{"category":"spy","price":600000,"strength":600},"nunchaku":{"category":"spy","price":1000000,"strength":1000},"horn":{"category":"sentry","price":140000,"strength":140},"tripwire":{"category":"sentry","price":250000,"strength":250},"guard dog":{"category":"sentry","price":600000,"strength":600},"lookout tower":{"category":"sentry","price":1000000,"strength":1000},"toxic needle dagger":{"category":"poison","price":140000,"strength":140},"venomfang staff":{"category":"poison","price":250000,"strength":250},"blightbane bow":{"category":"poison","price":600000,"strength":600},"plaguebringer scythe":{"category":"poison","price":1000000,"strength":1000},"viperfang dirk":{"category":"antidote","price":140000,"strength":140},"basiliskbane halberd":{"category":"antidote","price":250000,"strength":250},"wyrmclaw longsword":{"category":"antidote","price":600000,"strength":600},"serpentbane arbalest":{"category":"antidote","price":1000000,"strength":1000},"greasy gloves":{"category":"theft","price":140000,"strength":140},"rusty lockpick":{"category":"theft","price":250000,"strength":250},"shadow cloak":{"category":"theft","price":600000,"strength":600},"ethereal grasp":{"category":"theft","price":1000000,"strength":1000},"wooden whistle":{"category":"vigilance","price":140000,"strength":140},"steel shackles":{"category":"vigilance","price":250000,"strength":250},"silver scepter":{"category":"vigilance","price":600000,"strength":600},"adamantine bastion":{"category":"vigilance","price":1000000,"strength":1000}};
-  const valid=n=>typeof n==='number'&&Number.isFinite(n)&&n>=0;
-  const integer=n=>Number.isSafeInteger(n)&&n>=0;
-  const recent=(at,now,age=WINDOW)=>valid(at)&&at>0&&now>=at&&now-at<=age;
-  const key=s=>String(s||'').trim().toLowerCase();
-  function stamp(t,f){return t&&t.fieldAt&&t.fieldAt[f]!==undefined?t.fieldAt[f]:t&&t.at;}
-  function normalItem(item,at,options={}){
-    const def=CATALOG[key(item.name)],category=def?def.category:item.category;
-    if(!FIELDS.includes(category)||def&&item.category&&FIELDS.includes(item.category)&&item.category!==category)return null;
-    const price=valid(item.price)&&item.price>0?item.price:def&&def.price;
-    const estimatedStrength=!!item.strengthUnknown||!valid(item.strength);
-    const strength=estimatedStrength?def&&def.strength:item.strength;
-    if(item.strengthUnknown&&!options.allowCatalogStrength||!integer(item.qty)||!valid(price)||price<=0||!valid(strength)||strength<=0)return null;
-    return {name:item.name,category,qty:item.qty,price,strength,estimatedStrength,strengthSource:estimatedStrength?'SR catalog estimate':item.strengthCarried?'carried observation':'observed',at:item.fieldAt&&item.fieldAt.qty||item.at||at,strengthAt:item.fieldAt&&item.fieldAt.strength||item.at||at,strengthCarried:!!item.strengthCarried,priceSource:valid(item.price)&&item.price>0?'recorded':'SR catalog'};
-  }
-  function mergeWeapon(before,row){
-    const out={...(before||{}),name:row.name||(before||{}).name,fieldAt:{...((before||{}).fieldAt||{})},fieldSource:{...((before||{}).fieldSource||{})}};
-    for(const f of ['qty','strength','category','price']){
-      if(out.fieldAt[f]===undefined&&before&&(f==='category'?FIELDS.includes(before[f]):f==='qty'?integer(before[f]):valid(before[f]))&&!(f==='strength'&&before.strengthUnknown))out.fieldAt[f]=before.at||0;
-      const known=f==='qty'?integer(row[f]):f==='category'?FIELDS.includes(row[f]):valid(row[f])&&!(f==='strength'&&row.strengthUnknown);
-      const at=row.fieldAt&&row.fieldAt[f]!==undefined?row.fieldAt[f]:row.at||0;
-      if(known&&at>0&&at>=(out.fieldAt[f]||0)){out[f]=row[f];out.fieldAt[f]=at;out.fieldSource[f]=row.source||'captured recon';}
-    }
-    out.latestSeenAt=Math.max(out.latestSeenAt||before&&before.at||0,row.latestSeenAt||row.at||0);
-    out.at=Math.max(0,...Object.values(out.fieldAt));out.strengthUnknown=!out.fieldAt.strength;
-    return out;
-  }
-  function projectWeapon(raw,now){
-    const row={...raw,fieldAt:{...(raw.fieldAt||{})}};
-    for(const f of ['qty','strength','price']){
-      const legacy=f==='strength'?(valid(raw.strength)&&!raw.strengthUnknown?raw.at:0):raw.at;
-      const at=row.fieldAt[f]!==undefined?row.fieldAt[f]:legacy;
-      row.fieldAt[f]=at||0;
-      if(!recent(at,now,WINDOW)){row[f]=null;if(f==='strength')row.strengthUnknown=true;}
-    }
-    row.strengthUnknown=valid(row.strength)?false:!!raw.strengthUnknown||!!row.fieldAt.strength;row.qtyCarried=integer(row.qty)&&(raw.latestSeenAt||raw.at)>row.fieldAt.qty;row.strengthCarried=valid(row.strength)&&(raw.latestSeenAt||raw.at)>row.fieldAt.strength;
-    return row;
-  }
-  function mergeCapture(old,incoming){
-    const out={...(old||{}),name:incoming.name||(old||{}).name,id:incoming.id||(old||{}).id,items:{...((old||{}).items||{})},ratings:{...((old||{}).ratings||{})},units:{...((old||{}).units||{})},unitBreakdown:{...((old||{}).unitBreakdown||{})},observations:{...((old||{}).observations||{})}};
-    for(const [name,row] of Object.entries(incoming.items||{}))out.items[name]=mergeWeapon(out.items[name],row);
-    for(const family of ['ratings','units','unitBreakdown'])for(const [f,row] of Object.entries(incoming[family]||{}))if(row&&integer(row.value)&&row.at>0&&(!out[family][f]||row.at>=out[family][f].at))out[family][f]={...row};
-    if(incoming.sabCap&&(!out.sabCap||incoming.sabCap.at>=out.sabCap.at))out.sabCap={...incoming.sabCap};
-    if(incoming.observationKey&&(incoming.scanAt||incoming.at)&&!out.observations[incoming.observationKey])out.observations[incoming.observationKey]={at:incoming.scanAt||incoming.at,source:incoming.source||'game report'};
-    const cutoff=(incoming.receivedAt||Date.now())-WINDOW;
-    out.observations=Object.fromEntries(Object.entries(out.observations).filter(([,r])=>r.at>=cutoff).sort((a,b)=>b[1].at-a[1].at).slice(0,256));
-    if(incoming.unknownAt)out.unknownAt=Math.max(out.unknownAt||0,incoming.unknownAt);
-    if(incoming.scanAt&&(!old||incoming.scanAt>=(old.scanAt||0))){out.scanAt=incoming.scanAt;out.unresolved=(incoming.unresolved||[]).map(row=>({...row}));}
-    return out;
-  }
-  function pooledTarget(board,id,local,now){
-    const original=(board.targets||{})[id]||{},out={name:original.name||local&&local.name,id:String(id),fieldAt:{},units:{},unitBreakdown:{},at:0,sabCap:local&&local.sabCap&&(!original.sabCap||local.sabCap.at>=original.sabCap.at)?local.sabCap:original.sabCap},items={};
-    function take(f,value,at,family){if(!integer(value)||!recent(at,now,WINDOW))return;const k=family?family+'.'+f:f;if(at>=(out.fieldAt[k]||0)){if(family)out[family][f]=value;else out[f]=value;out.fieldAt[k]=at;out.at=Math.max(out.at,at);}}
-    for(const row of [...((board.histlog||{})[id]||[]),original]){
-      if(!row||typeof row!=='object')continue;
-      for(const f of FIELDS){take(f,row[f],stamp(row,f));take(f,row.units&&row.units[f],row.fieldAt&&row.fieldAt['units.'+f]!==undefined?row.fieldAt['units.'+f]:row.at,'units');}
-      for(const [f,r] of Object.entries(row.unitBreakdown||{}))if(r&&integer(r.value)&&recent(r.at,now,WINDOW)&&(!out.unitBreakdown[f]||r.at>=out.unitBreakdown[f].at))out.unitBreakdown[f]={...r};
-      if(row.equipment&&recent(row.equipment.at,now,WINDOW))for(const item of row.equipment.items||[])if(item.name&&!/\?/.test(item.name))items[key(item.name)]=mergeWeapon(items[key(item.name)],{...item,at:row.equipment.at,source:'shared intel'});
-    }
-    for(const [f,r] of Object.entries(local&&local.ratings||{}))take(f,r.value,r.at);
-    for(const [f,r] of Object.entries(local&&local.units||{}))take(f,r.value,r.at,'units');
-    for(const [f,r] of Object.entries(local&&local.unitBreakdown||{}))if(r&&integer(r.value)&&recent(r.at,now,WINDOW)&&(!out.unitBreakdown[f]||r.at>=out.unitBreakdown[f].at))out.unitBreakdown[f]={...r};
-    for(const [name,row] of Object.entries(local&&local.items||{}))if(recent(row.latestSeenAt||row.at,now,WINDOW))items[name]=mergeWeapon(items[name],row);
-    out.equipment={at:now,items:Object.values(items).map(r=>projectWeapon(r,now)),complete:false,pooled:true};
-    return out;
-  }
-  function trackerCapture(payload,id,now){
-    if(!payload||String(payload.target_id)!==String(id)||!/^\d+$/.test(String(id)))throw Error('Website data belongs to another target.');
-    const target=payload.target||{},capture={id:String(id),name:target.name||payload.name||'#'+id,items:{},ratings:{},units:{},unitBreakdown:{},sabCap:target.sabCap,receivedAt:now,scanAt:0,source:'website tracker',observationKey:'website:'+String(payload.generated_at||now)};
-    function take(f,value,at,family){value=typeof value==='number'?value:/^\d+$/.test(String(value))?Number(value):NaN;if(!integer(value)||!recent(at,now,WINDOW))return;const obj=capture[family];if(!obj[f]||at>=obj[f].at)obj[f]={value,at,source:'website tracker'};capture.scanAt=Math.max(capture.scanAt,at);}
-    for(const snap of [...(Array.isArray(payload.history)?payload.history:[]),target]){
-      if(!snap||typeof snap!=='object')continue;
-      for(const f of FIELDS){take(f,snap[f],stamp(snap,f),'ratings');take(f,snap.units&&snap.units[f],snap.fieldAt&&snap.fieldAt['units.'+f]!==undefined?snap.fieldAt['units.'+f]:snap.at,'units');}
-      for(const [f,row] of Object.entries(snap.unitBreakdown||{}))if(row&&['attackSoldiers','attackMercenaries','defenseSoldiers','defenseMercenaries','untrained','spies','sentries','poisonUnits','antidoteUnits','thieves','rangers'].includes(f))take(f,row.value,row.at,'unitBreakdown');
-      const eq=snap.equipment;if(eq&&recent(eq.at,now,WINDOW))for(const item of eq.items||[])if(typeof item.name==='string'&&!/\?/.test(item.name))capture.items[key(item.name)]=mergeWeapon(capture.items[key(item.name)],{...item,at:eq.at,source:'website shared equipment'});
-    }
-    for(const row of payload.readings||[]){if(!row||typeof row.metric!=='string')continue;if(FIELDS.includes(row.metric))take(row.metric,row.value,row.at,'ratings');else if(row.metric.startsWith('units_')&&FIELDS.includes(row.metric.slice(6)))take(row.metric.slice(6),row.value,row.at,'units');}
-    if(!capture.scanAt)capture.scanAt=Math.max(0,...Object.values(capture.items).map(r=>r.at));
-    if(!capture.scanAt)throw Error('No usable website observations from the last 30 days.');return capture;
-  }
-  function inventory(target,local,now,options={}){
-    const entries={},blocked=new Set(),notes=[],knownRows=[],unresolvedCategories=new Set();let unknown=false;
-    const eq=target.equipment;
-    const manifest=local&&recent(local.scanAt,now)&&(!eq||!recent(eq.at,now)||local.scanAt>=eq.at);
-    if(eq&&recent(eq.at,now)){
-      unknown=!!eq.unknownCategory&&!manifest;
-      for(const item of eq.items||[]){
-        if(!item.name||/\?/.test(item.name)){if(!manifest){if(FIELDS.includes(item.category))blocked.add(item.category);else unknown=true;}continue;}
-        entries[key(item.name)]=mergeWeapon(entries[key(item.name)],{...item,at:item.at||eq.at});
+    const Lab = (() => {
+      const DAY=86400000, WINDOW=30*DAY, FIELDS=['sa','da','spy','sentry','poison','antidote','theft','vigilance'];
+      const LABELS={sa:'SA',da:'DA',spy:'Spy',sentry:'Sentry',poison:'Poison',antidote:'Antidote',theft:'Theft',vigilance:'Vigilance'};
+      const CATALOG={"sarumans ball":{"category":"sa","price":100,"strength":1},"heavy steed":{"category":"sa","price":50000,"strength":100},"chariot":{"category":"sa","price":450000,"strength":600},"blackpowder missile":{"category":"sa","price":1000000,"strength":1000},"spider":{"category":"da","price":5000,"strength":10},"mithril":{"category":"da","price":50000,"strength":100},"ebony platemail":{"category":"da","price":450000,"strength":600},"invisibility shield":{"category":"da","price":1000000,"strength":1000},"cloak":{"category":"spy","price":140000,"strength":140},"grappling hook":{"category":"spy","price":250000,"strength":250},"skeleton key":{"category":"spy","price":600000,"strength":600},"nunchaku":{"category":"spy","price":1000000,"strength":1000},"horn":{"category":"sentry","price":140000,"strength":140},"tripwire":{"category":"sentry","price":250000,"strength":250},"guard dog":{"category":"sentry","price":600000,"strength":600},"lookout tower":{"category":"sentry","price":1000000,"strength":1000},"toxic needle dagger":{"category":"poison","price":140000,"strength":140},"venomfang staff":{"category":"poison","price":250000,"strength":250},"blightbane bow":{"category":"poison","price":600000,"strength":600},"plaguebringer scythe":{"category":"poison","price":1000000,"strength":1000},"viperfang dirk":{"category":"antidote","price":140000,"strength":140},"basiliskbane halberd":{"category":"antidote","price":250000,"strength":250},"wyrmclaw longsword":{"category":"antidote","price":600000,"strength":600},"serpentbane arbalest":{"category":"antidote","price":1000000,"strength":1000},"greasy gloves":{"category":"theft","price":140000,"strength":140},"rusty lockpick":{"category":"theft","price":250000,"strength":250},"shadow cloak":{"category":"theft","price":600000,"strength":600},"ethereal grasp":{"category":"theft","price":1000000,"strength":1000},"wooden whistle":{"category":"vigilance","price":140000,"strength":140},"steel shackles":{"category":"vigilance","price":250000,"strength":250},"silver scepter":{"category":"vigilance","price":600000,"strength":600},"adamantine bastion":{"category":"vigilance","price":1000000,"strength":1000}};
+      const valid=n=>typeof n==='number'&&Number.isFinite(n)&&n>=0;
+      const integer=n=>Number.isSafeInteger(n)&&n>=0;
+      const recent=(at,now,age=WINDOW)=>valid(at)&&at>0&&now>=at&&now-at<=age;
+      const key=s=>String(s||'').trim().toLowerCase();
+      function stamp(t,f){return t&&t.fieldAt&&t.fieldAt[f]!==undefined?t.fieldAt[f]:t&&t.at;}
+      function normalItem(item,at,options={}){
+        const def=CATALOG[key(item.name)],category=def?def.category:item.category;
+        if(!FIELDS.includes(category)||def&&item.category&&FIELDS.includes(item.category)&&item.category!==category)return null;
+        const price=valid(item.price)&&item.price>0?item.price:def&&def.price;
+        const estimatedStrength=!!item.strengthUnknown||!valid(item.strength);
+        const strength=estimatedStrength?def&&def.strength:item.strength;
+        if(item.strengthUnknown&&!options.allowCatalogStrength||!integer(item.qty)||!valid(price)||price<=0||!valid(strength)||strength<=0)return null;
+        return {name:item.name,category,qty:item.qty,price,strength,estimatedStrength,strengthSource:estimatedStrength?'SR catalog estimate':item.strengthCarried?'carried observation':'observed',at:item.fieldAt&&item.fieldAt.qty||item.at||at,strengthAt:item.fieldAt&&item.fieldAt.strength||item.at||at,strengthCarried:!!item.strengthCarried,priceSource:valid(item.price)&&item.price>0?'recorded':'SR catalog'};
       }
-      if(!manifest)for(const [f,incomplete] of Object.entries(eq.incompleteCategories||{}))if(incomplete)unresolvedCategories.add(f);
-    }
-    let localNewest=0;
-    for(const [name,row] of Object.entries(local&&local.items||{})){
-      if(!recent(row.latestSeenAt||row.at,now,WINDOW))continue;
-      entries[name]=mergeWeapon(entries[name],row);
-      localNewest=Math.max(localNewest,row.at);
-    }
-    if(manifest){
-      unknown=false;
-      for(const row of local.unresolved||[])if(FIELDS.includes(row.category))unresolvedCategories.add(row.category);else unknown=true;
-    }else{
-      if(localNewest&&eq&&localNewest>=eq.at)unknown=false;
-      if(local&&recent(local.unknownAt,now)&&local.unknownAt>=localNewest)unknown=true;
-    }
-    const groups={};
-    for(const raw of Object.values(entries)){
-      if(!recent(raw.latestSeenAt||raw.at,now,WINDOW))continue;
-      const row=projectWeapon(raw,now);
-      const def=CATALOG[key(row.name)],f=def?def.category:row.category;
-      const price=valid(row.price)&&row.price>0?row.price:def&&def.price;
-      knownRows.push({name:row.name,f,qty:integer(row.qty)?row.qty:null,price:valid(price)?price:null,at:row.fieldAt.qty||row.at,strengthAt:row.fieldAt.strength||0,qtyCarried:row.qtyCarried,strengthCarried:row.strengthCarried,priceSource:valid(row.price)&&row.price>0?'recorded':'SR catalog',strengthUnknown:!!row.strengthUnknown,currentStrength:row.strengthUnknown?(options.allowCatalogStrength&&def?def.strength:null):(valid(row.strength)?row.strength:def&&def.strength),strengthSource:row.strengthUnknown?(options.allowCatalogStrength&&def?'SR catalog estimate':'Unknown'):(valid(row.strength)?row.strengthCarried?'carried observation':'observed':'SR catalog estimate')});
-      const item=normalItem(row,row.at,options);
-      if(!item){if(FIELDS.includes(f))blocked.add(f);else unknown=true;continue;}
-      (groups[f]||(groups[f]=[])).push(item);
-    }
-    for(const f of FIELDS){
-      if(blocked.has(f)){delete groups[f];continue;}
-      if(!groups[f])continue;
-      groups[f].sort((a,b)=>b.strength/b.price-a.strength/a.price||a.name.localeCompare(b.name));
-      const cost=groups[f].reduce((s,x)=>s+x.qty*x.price,0),strength=groups[f].reduce((s,x)=>s+x.qty*x.strength,0);
-      if(!integer(cost)||!valid(strength)||strength<=0)delete groups[f];
-    }
-    if(unresolvedCategories.size)notes.push('Pooled known weapons used for '+[...unresolvedCategories].map(f=>LABELS[f]).join(', ')+'; unnamed report rows remain unresolved and are not added again.');
-    if(unknown)notes.push('Unidentified report rows remain unresolved; pooled known weapons are used conditionally without adding duplicate unknown stock.');
-    if(blocked.size)notes.push('Incomplete stacks excluded only from their affected categories: '+[...blocked].map(f=>LABELS[f]).join(', ')+'.');
-    return {groups,notes,knownRows,unknown,partial:unknown||unresolvedCategories.size>0,blocked:[...blocked]};
-  }
-  function budgetFor(target,tiv,now){
-    const cap=target.sabCap;
-    if(cap&&recent(cap.at,now,DAY)&&integer(cap.value)){
-      if(integer(cap.used))return {value:Math.max(0,cap.value-cap.used),text:'Saved cap minus saved usage; confirm it is still available.',at:cap.at};
-      return {value:cap.value,text:'Saved daily maximum. Usage is unknown; enter the actual remaining amount.',at:cap.at};
-    }
-    if(tiv&&recent(tiv.at,now)&&valid(tiv.invested)&&tiv.invested>0)return {value:Math.floor(tiv.invested*0.154),text:'~ Daily maximum from TIV × 15.4%. Usage is unknown; enter remaining amount.',at:tiv.at};
-    return {value:null,text:'No recent cap: enter a scenario budget from the target sabotage page.'};
-  }
-  function peersFor(board,id,target,f,now){
-    const result=[],seen=new Set([key(target.name)]);
-    for(const [otherId,t] of Object.entries(board.targets||{}).sort((a,b)=>(stamp(b[1]||{},f)||0)-(stamp(a[1]||{},f)||0))){
-      if(otherId===String(id)||!/^\d+$/.test(otherId)||!t||!valid(t[f])||!recent(stamp(t,f),now))continue;
-      const identity=key(t.name)||'#'+otherId;
-      if(seen.has(identity))continue;seen.add(identity);result.push({id:otherId,name:t.name||'#'+otherId,rating:t[f]});
-    }
-    return result;
-  }
-  function removal(items,budget){
-    let cost=0,strength=0;const actions=[];
-    for(const item of items){
-      const qty=Math.min(item.qty,Math.max(0,Math.floor((budget-cost)/item.price)));
-      if(qty){cost+=qty*item.price;strength+=qty*item.strength;actions.push({...item,available:item.qty,qty,cost:qty*item.price});}
-      if(qty<item.qty)break; // Fixed monotone stack order, not a global item optimum.
-    }
-    return {cost,strength,actions};
-  }
-  function afterFor(rating,totalStrength,removed,floor){return Math.max(0,rating*(floor+(1-floor)*Math.max(0,1-removed/totalStrength)));}
-  function stackOrders(items){
-    if(items.length>4)return [items,items.slice().reverse()];
-    const result=[];
-    function walk(prefix,rest){if(!rest.length){result.push(prefix);return;}for(let i=0;i<rest.length;i++)walk(prefix.concat(rest[i]),rest.filter((_,j)=>j!==i));}
-    walk([],items);return result;
-  }
-  function optionsFor(f,rating,items,peers,budget,floor,impact=null){
-    const totalCost=items.reduce((s,x)=>s+x.qty*x.price,0),totalStrength=items.reduce((s,x)=>s+x.qty*x.strength,0);
-    const limit=Math.min(totalCost,budget),dedup=new Map(),cheapestScore=new Map(),totalQty=items.reduce((s,x)=>s+x.qty,0);
-    const peerRatings=peers.map(p=>p.rating).filter(v=>v<rating&&v>rating*floor).sort((a,b)=>a-b),thresholds=[...new Set(peerRatings)];
-    function scoreAt(after){let lo=0,hi=peerRatings.length;while(lo<hi){const m=(lo+hi)>>>1;if(peerRatings[m]<=after)lo=m+1;else hi=m;}return peerRatings.length-lo;}
-    function worth(cost,strength){if(impact)return true;const prior=dedup.get(cost);if(prior&&prior.removedStrength>=strength)return false;const score=scoreAt(afterFor(rating,totalStrength,strength,floor));return !cheapestScore.has(score)||cost<cheapestScore.get(score);}
-    function offer(r,thresholdOnly=false){
-      if(r.cost>budget||!integer(r.cost))return;
-      const after=impact?impact(r.actions):afterFor(rating,totalStrength,r.strength,floor),score=scoreAt(after);
-      if(thresholdOnly&&cheapestScore.has(score)&&cheapestScore.get(score)<=r.cost)return;
-      if(!cheapestScore.has(score)||r.cost<cheapestScore.get(score))cheapestScore.set(score,r.cost);
-      const option={f,cost:r.cost,actions:r.actions,removedStrength:r.strength,after,before:rating,score,samples:peers.length,full:r.actions.reduce((s,x)=>s+x.qty,0)===totalQty};
-      const prior=dedup.get(r.cost);if(!prior||after<prior.after||after===prior.after&&r.actions.length<prior.actions.length)dedup.set(r.cost,option);
-    }
-    function action(item,qty){return {...item,available:item.qty,qty,cost:qty*item.price};}
-    function required(threshold){return totalStrength*(1-(threshold/rating-floor)/(1-floor));}
-    function primaryQty(item,strengthSoFar,threshold,baseActions=[]){
-      if(impact){const calc=q=>impact(q?baseActions.concat(action(item,q)):baseActions);if(calc(0)<threshold)return 0;if(calc(item.qty)>=threshold)return null;let lo=1,hi=item.qty;while(lo<hi){const mid=lo+Math.floor((hi-lo)/2);if(calc(mid)<threshold)hi=mid;else lo=mid+1;}return lo;}
-      let q=Math.max(0,Math.floor((required(threshold)-strengthSoFar)/item.strength)+1);
-      if(q>item.qty)return null;
-      while(q>0&&afterFor(rating,totalStrength,strengthSoFar+(q-1)*item.strength,floor)<threshold)q--;
-      while(q<=item.qty&&afterFor(rating,totalStrength,strengthSoFar+q*item.strength,floor)>=threshold)q++;
-      return q<=item.qty?q:null;
-    }
-    offer({cost:0,strength:0,actions:[]});
-    for(const order of stackOrders(items)){
-      for(const spend of [limit,Math.floor(limit*.25),Math.floor(limit*.5),Math.floor(limit*.75)])offer(removal(order,spend));
-      if(totalCost<=budget)offer(removal(order,totalCost));
-      for(const threshold of thresholds){
-        let cost=0,strength=0,actions=[];
-        for(const item of order){
-          const qty=primaryQty(item,strength,threshold,actions);
-          if(qty!==null){offer({cost:cost+qty*item.price,strength:strength+qty*item.strength,actions:qty?actions.concat(action(item,qty)):actions},true);break;}
-          cost+=item.qty*item.price;strength+=item.qty*item.strength;if(item.qty)actions.push(action(item,item.qty));
-          if(cost>budget)break;
+      function mergeWeapon(before,row){
+        const out={...(before||{}),name:row.name||(before||{}).name,fieldAt:{...((before||{}).fieldAt||{})},fieldSource:{...((before||{}).fieldSource||{})}};
+        for(const f of ['qty','strength','category','price']){
+          if(out.fieldAt[f]===undefined&&before&&(f==='category'?FIELDS.includes(before[f]):f==='qty'?integer(before[f]):valid(before[f]))&&!(f==='strength'&&before.strengthUnknown))out.fieldAt[f]=before.at||0;
+          const known=f==='qty'?integer(row[f]):f==='category'?FIELDS.includes(row[f]):valid(row[f])&&!(f==='strength'&&row.strengthUnknown);
+          const at=row.fieldAt&&row.fieldAt[f]!==undefined?row.fieldAt[f]:row.at||0;
+          if(known&&at>0&&at>=(out.fieldAt[f]||0)){out[f]=row[f];out.fieldAt[f]=at;out.fieldSource[f]=row.source||'captured recon';}
         }
+        out.latestSeenAt=Math.max(out.latestSeenAt||before&&before.at||0,row.latestSeenAt||row.at||0);
+        out.at=Math.max(0,...Object.values(out.fieldAt));out.strengthUnknown=!out.fieldAt.strength;
+        return out;
       }
-    }
-    // Add mixed partial stacks, including small inventories such as five
-    // low-tier tools that a single fixed order could otherwise miss.
-    for(let i=0;i<items.length;i++)for(let j=0;j<items.length;j++){
-      if(i===j)continue;const primary=items[i],secondary=items[j],others=items.filter((_,k)=>k!==i&&k!==j);
-      const masks=items.length<=4?Array.from({length:2**others.length},(_,k)=>k):[0,2**Math.min(others.length,20)-1];
-      for(const mask of masks){
-        const base=others.filter((_,k)=>k<20&&(mask&(2**k))),baseCost=base.reduce((s,a)=>s+a.qty*a.price,0),baseStrength=base.reduce((s,a)=>s+a.qty*a.strength,0);
-        if(baseCost>budget)continue;const max=Math.min(secondary.qty,Math.floor((budget-baseCost)/secondary.price));
-        for(const threshold of thresholds){
-          const values=new Set();
-          if(max<=128)for(let q=0;q<=max;q++)values.add(q);
-          else{
-            for(let q=0;q<=8;q++){values.add(q);values.add(max-q);values.add(Math.floor(max*q/8));}
-            for(const boundary of [(required(threshold)-baseStrength)/secondary.strength,(required(threshold)-baseStrength-primary.qty*primary.strength)/secondary.strength])for(let delta=-2;delta<=2;delta++)values.add(Math.max(0,Math.min(max,Math.floor(boundary)+delta)));
+      function projectWeapon(raw,now){
+        const row={...raw,fieldAt:{...(raw.fieldAt||{})}};
+        for(const f of ['qty','strength','price']){
+          const legacy=f==='strength'?(valid(raw.strength)&&!raw.strengthUnknown?raw.at:0):raw.at;
+          const at=row.fieldAt[f]!==undefined?row.fieldAt[f]:legacy;
+          row.fieldAt[f]=at||0;
+          if(!recent(at,now,WINDOW)){row[f]=null;if(f==='strength')row.strengthUnknown=true;}
+        }
+        row.strengthUnknown=valid(row.strength)?false:!!raw.strengthUnknown||!!row.fieldAt.strength;row.qtyCarried=integer(row.qty)&&(raw.latestSeenAt||raw.at)>row.fieldAt.qty;row.strengthCarried=valid(row.strength)&&(raw.latestSeenAt||raw.at)>row.fieldAt.strength;
+        return row;
+      }
+      function mergeCapture(old,incoming){
+        const out={...(old||{}),name:incoming.name||(old||{}).name,id:incoming.id||(old||{}).id,items:{...((old||{}).items||{})},ratings:{...((old||{}).ratings||{})},units:{...((old||{}).units||{})},unitBreakdown:{...((old||{}).unitBreakdown||{})},observations:{...((old||{}).observations||{})}};
+        for(const [name,row] of Object.entries(incoming.items||{}))out.items[name]=mergeWeapon(out.items[name],row);
+        for(const family of ['ratings','units','unitBreakdown'])for(const [f,row] of Object.entries(incoming[family]||{}))if(row&&integer(row.value)&&row.at>0&&(!out[family][f]||row.at>=out[family][f].at))out[family][f]={...row};
+        if(incoming.sabCap&&(!out.sabCap||incoming.sabCap.at>=out.sabCap.at))out.sabCap={...incoming.sabCap};
+        if(incoming.observationKey&&(incoming.scanAt||incoming.at)&&!out.observations[incoming.observationKey])out.observations[incoming.observationKey]={at:incoming.scanAt||incoming.at,source:incoming.source||'game report'};
+        const cutoff=(incoming.receivedAt||Date.now())-WINDOW;
+        out.observations=Object.fromEntries(Object.entries(out.observations).filter(([,r])=>r.at>=cutoff).sort((a,b)=>b[1].at-a[1].at).slice(0,256));
+        if(incoming.unknownAt)out.unknownAt=Math.max(out.unknownAt||0,incoming.unknownAt);
+        if(incoming.scanAt&&(!old||incoming.scanAt>=(old.scanAt||0))){out.scanAt=incoming.scanAt;out.unresolved=(incoming.unresolved||[]).map(row=>({...row}));}
+        return out;
+      }
+      function pooledTarget(board,id,local,now){
+        const original=(board.targets||{})[id]||{},out={name:original.name||local&&local.name,id:String(id),fieldAt:{},units:{},unitBreakdown:{},at:0,sabCap:local&&local.sabCap&&(!original.sabCap||local.sabCap.at>=original.sabCap.at)?local.sabCap:original.sabCap},items={};
+        function take(f,value,at,family){if(!integer(value)||!recent(at,now,WINDOW))return;const k=family?family+'.'+f:f;if(at>=(out.fieldAt[k]||0)){if(family)out[family][f]=value;else out[f]=value;out.fieldAt[k]=at;out.at=Math.max(out.at,at);}}
+        for(const row of [...((board.histlog||{})[id]||[]),original]){
+          if(!row||typeof row!=='object')continue;
+          for(const f of FIELDS){take(f,row[f],stamp(row,f));take(f,row.units&&row.units[f],row.fieldAt&&row.fieldAt['units.'+f]!==undefined?row.fieldAt['units.'+f]:row.at,'units');}
+          for(const [f,r] of Object.entries(row.unitBreakdown||{}))if(r&&integer(r.value)&&recent(r.at,now,WINDOW)&&(!out.unitBreakdown[f]||r.at>=out.unitBreakdown[f].at))out.unitBreakdown[f]={...r};
+          if(row.equipment&&recent(row.equipment.at,now,WINDOW))for(const item of row.equipment.items||[])if(item.name&&!/\?/.test(item.name))items[key(item.name)]=mergeWeapon(items[key(item.name)],{...item,at:row.equipment.at,source:'shared intel'});
+        }
+        for(const [f,r] of Object.entries(local&&local.ratings||{}))take(f,r.value,r.at);
+        for(const [f,r] of Object.entries(local&&local.units||{}))take(f,r.value,r.at,'units');
+        for(const [f,r] of Object.entries(local&&local.unitBreakdown||{}))if(r&&integer(r.value)&&recent(r.at,now,WINDOW)&&(!out.unitBreakdown[f]||r.at>=out.unitBreakdown[f].at))out.unitBreakdown[f]={...r};
+        for(const [name,row] of Object.entries(local&&local.items||{}))if(recent(row.latestSeenAt||row.at,now,WINDOW))items[name]=mergeWeapon(items[name],row);
+        out.equipment={at:now,items:Object.values(items).map(r=>projectWeapon(r,now)),complete:false,pooled:true};
+        return out;
+      }
+      function trackerCapture(payload,id,now){
+        if(!payload||String(payload.target_id)!==String(id)||!/^\d+$/.test(String(id)))throw Error('Website data belongs to another target.');
+        const target=payload.target||{},capture={id:String(id),name:target.name||payload.name||'#'+id,items:{},ratings:{},units:{},unitBreakdown:{},sabCap:target.sabCap,receivedAt:now,scanAt:0,source:'website tracker',observationKey:'website:'+String(payload.generated_at||now)};
+        function take(f,value,at,family){value=typeof value==='number'?value:/^\d+$/.test(String(value))?Number(value):NaN;if(!integer(value)||!recent(at,now,WINDOW))return;const obj=capture[family];if(!obj[f]||at>=obj[f].at)obj[f]={value,at,source:'website tracker'};capture.scanAt=Math.max(capture.scanAt,at);}
+        for(const snap of [...(Array.isArray(payload.history)?payload.history:[]),target]){
+          if(!snap||typeof snap!=='object')continue;
+          for(const f of FIELDS){take(f,snap[f],stamp(snap,f),'ratings');take(f,snap.units&&snap.units[f],snap.fieldAt&&snap.fieldAt['units.'+f]!==undefined?snap.fieldAt['units.'+f]:snap.at,'units');}
+          for(const [f,row] of Object.entries(snap.unitBreakdown||{}))if(row&&['attackSoldiers','attackMercenaries','defenseSoldiers','defenseMercenaries','untrained','spies','sentries','poisonUnits','antidoteUnits','thieves','rangers'].includes(f))take(f,row.value,row.at,'unitBreakdown');
+          const eq=snap.equipment;if(eq&&recent(eq.at,now,WINDOW))for(const item of eq.items||[])if(typeof item.name==='string'&&!/\?/.test(item.name))capture.items[key(item.name)]=mergeWeapon(capture.items[key(item.name)],{...item,at:eq.at,source:'website shared equipment'});
+        }
+        for(const row of payload.readings||[]){if(!row||typeof row.metric!=='string')continue;if(FIELDS.includes(row.metric))take(row.metric,row.value,row.at,'ratings');else if(row.metric.startsWith('units_')&&FIELDS.includes(row.metric.slice(6)))take(row.metric.slice(6),row.value,row.at,'units');}
+        if(!capture.scanAt)capture.scanAt=Math.max(0,...Object.values(capture.items).map(r=>r.at));
+        if(!capture.scanAt)throw Error('No usable website observations from the last 30 days.');return capture;
+      }
+      function inventory(target,local,now,options={}){
+        const entries={},blocked=new Set(),notes=[],knownRows=[],unresolvedCategories=new Set();let unknown=false;
+        const eq=target.equipment;
+        const manifest=local&&recent(local.scanAt,now)&&(!eq||!recent(eq.at,now)||local.scanAt>=eq.at);
+        if(eq&&recent(eq.at,now)){
+          unknown=!!eq.unknownCategory&&!manifest;
+          for(const item of eq.items||[]){
+            if(!item.name||/\?/.test(item.name)){if(!manifest){if(FIELDS.includes(item.category))blocked.add(item.category);else unknown=true;}continue;}
+            entries[key(item.name)]=mergeWeapon(entries[key(item.name)],{...item,at:item.at||eq.at});
           }
-          for(const q of values){
-            const strength=baseStrength+q*secondary.strength,baseActions=base.filter(a=>a.qty>0).map(a=>action(a,a.qty));if(q)baseActions.push(action(secondary,q));const qty=primaryQty(primary,strength,threshold,baseActions);if(qty===null)continue;
-            const cost=baseCost+q*secondary.price+qty*primary.price;if(cost>budget||!worth(cost,strength+qty*primary.strength))continue;
-            const actions=baseActions;if(qty)actions.push(action(primary,qty));
-            offer({cost,strength:strength+qty*primary.strength,actions},true);
+          if(!manifest)for(const [f,incomplete] of Object.entries(eq.incompleteCategories||{}))if(incomplete)unresolvedCategories.add(f);
+        }
+        let localNewest=0;
+        for(const [name,row] of Object.entries(local&&local.items||{})){
+          if(!recent(row.latestSeenAt||row.at,now,WINDOW))continue;
+          entries[name]=mergeWeapon(entries[name],row);
+          localNewest=Math.max(localNewest,row.at);
+        }
+        if(manifest){
+          unknown=false;
+          for(const row of local.unresolved||[])if(FIELDS.includes(row.category))unresolvedCategories.add(row.category);else unknown=true;
+        }else{
+          if(localNewest&&eq&&localNewest>=eq.at)unknown=false;
+          if(local&&recent(local.unknownAt,now)&&local.unknownAt>=localNewest)unknown=true;
+        }
+        const groups={};
+        for(const raw of Object.values(entries)){
+          if(!recent(raw.latestSeenAt||raw.at,now,WINDOW))continue;
+          const row=projectWeapon(raw,now);
+          const def=CATALOG[key(row.name)],f=def?def.category:row.category;
+          const price=valid(row.price)&&row.price>0?row.price:def&&def.price;
+          knownRows.push({name:row.name,f,qty:integer(row.qty)?row.qty:null,price:valid(price)?price:null,at:row.fieldAt.qty||row.at,strengthAt:row.fieldAt.strength||0,qtyCarried:row.qtyCarried,strengthCarried:row.strengthCarried,priceSource:valid(row.price)&&row.price>0?'recorded':'SR catalog',strengthUnknown:!!row.strengthUnknown,currentStrength:row.strengthUnknown?(options.allowCatalogStrength&&def?def.strength:null):(valid(row.strength)?row.strength:def&&def.strength),strengthSource:row.strengthUnknown?(options.allowCatalogStrength&&def?'SR catalog estimate':'Unknown'):(valid(row.strength)?row.strengthCarried?'carried observation':'observed':'SR catalog estimate')});
+          const item=normalItem(row,row.at,options);
+          if(!item){if(FIELDS.includes(f))blocked.add(f);else unknown=true;continue;}
+          (groups[f]||(groups[f]=[])).push(item);
+        }
+        for(const f of FIELDS){
+          if(blocked.has(f)){delete groups[f];continue;}
+          if(!groups[f])continue;
+          groups[f].sort((a,b)=>b.strength/b.price-a.strength/a.price||a.name.localeCompare(b.name));
+          const cost=groups[f].reduce((s,x)=>s+x.qty*x.price,0),strength=groups[f].reduce((s,x)=>s+x.qty*x.strength,0);
+          if(!integer(cost)||!valid(strength)||strength<=0)delete groups[f];
+        }
+        if(unresolvedCategories.size)notes.push('Pooled known weapons used for '+[...unresolvedCategories].map(f=>LABELS[f]).join(', ')+'; unnamed report rows remain unresolved and are not added again.');
+        if(unknown)notes.push('Unidentified report rows remain unresolved; pooled known weapons are used conditionally without adding duplicate unknown stock.');
+        if(blocked.size)notes.push('Incomplete stacks excluded only from their affected categories: '+[...blocked].map(f=>LABELS[f]).join(', ')+'.');
+        return {groups,notes,knownRows,unknown,partial:unknown||unresolvedCategories.size>0,blocked:[...blocked]};
+      }
+      function budgetFor(target,tiv,now){
+        const cap=target.sabCap;
+        if(cap&&recent(cap.at,now,DAY)&&integer(cap.value)){
+          if(integer(cap.used))return {value:Math.max(0,cap.value-cap.used),text:'Saved cap minus saved usage; confirm it is still available.',at:cap.at};
+          return {value:cap.value,text:'Saved daily maximum. Usage is unknown; enter the actual remaining amount.',at:cap.at};
+        }
+        if(tiv&&recent(tiv.at,now)&&valid(tiv.invested)&&tiv.invested>0)return {value:Math.floor(tiv.invested*0.154),text:'~ Daily maximum from TIV × 15.4%. Usage is unknown; enter remaining amount.',at:tiv.at};
+        return {value:null,text:'No recent cap: enter a scenario budget from the target sabotage page.'};
+      }
+      function peersFor(board,id,target,f,now){
+        const result=[],seen=new Set([key(target.name)]);
+        for(const [otherId,t] of Object.entries(board.targets||{}).sort((a,b)=>(stamp(b[1]||{},f)||0)-(stamp(a[1]||{},f)||0))){
+          if(otherId===String(id)||!/^\d+$/.test(otherId)||!t||!valid(t[f])||!recent(stamp(t,f),now))continue;
+          const identity=key(t.name)||'#'+otherId;
+          if(seen.has(identity))continue;seen.add(identity);result.push({id:otherId,name:t.name||'#'+otherId,rating:t[f]});
+        }
+        return result;
+      }
+      function removal(items,budget){
+        let cost=0,strength=0;const actions=[];
+        for(const item of items){
+          const qty=Math.min(item.qty,Math.max(0,Math.floor((budget-cost)/item.price)));
+          if(qty){cost+=qty*item.price;strength+=qty*item.strength;actions.push({...item,available:item.qty,qty,cost:qty*item.price});}
+          if(qty<item.qty)break;
+        }
+        return {cost,strength,actions};
+      }
+      function afterFor(rating,totalStrength,removed,floor){return Math.max(0,rating*(floor+(1-floor)*Math.max(0,1-removed/totalStrength)));}
+      function stackOrders(items){
+        if(items.length>4)return [items,items.slice().reverse()];
+        const result=[];
+        function walk(prefix,rest){if(!rest.length){result.push(prefix);return;}for(let i=0;i<rest.length;i++)walk(prefix.concat(rest[i]),rest.filter((_,j)=>j!==i));}
+        walk([],items);return result;
+      }
+      function optionsFor(f,rating,items,peers,budget,floor,impact=null){
+        const totalCost=items.reduce((s,x)=>s+x.qty*x.price,0),totalStrength=items.reduce((s,x)=>s+x.qty*x.strength,0);
+        const limit=Math.min(totalCost,budget),dedup=new Map(),cheapestScore=new Map(),totalQty=items.reduce((s,x)=>s+x.qty,0);
+        const peerRatings=peers.map(p=>p.rating).filter(v=>v<rating&&v>rating*floor).sort((a,b)=>a-b),thresholds=[...new Set(peerRatings)];
+        function scoreAt(after){let lo=0,hi=peerRatings.length;while(lo<hi){const m=(lo+hi)>>>1;if(peerRatings[m]<=after)lo=m+1;else hi=m;}return peerRatings.length-lo;}
+        function worth(cost,strength){if(impact)return true;const prior=dedup.get(cost);if(prior&&prior.removedStrength>=strength)return false;const score=scoreAt(afterFor(rating,totalStrength,strength,floor));return !cheapestScore.has(score)||cost<cheapestScore.get(score);}
+        function offer(r,thresholdOnly=false){
+          if(r.cost>budget||!integer(r.cost))return;
+          const after=impact?impact(r.actions):afterFor(rating,totalStrength,r.strength,floor),score=scoreAt(after);
+          if(thresholdOnly&&cheapestScore.has(score)&&cheapestScore.get(score)<=r.cost)return;
+          if(!cheapestScore.has(score)||r.cost<cheapestScore.get(score))cheapestScore.set(score,r.cost);
+          const option={f,cost:r.cost,actions:r.actions,removedStrength:r.strength,after,before:rating,score,samples:peers.length,full:r.actions.reduce((s,x)=>s+x.qty,0)===totalQty};
+          const prior=dedup.get(r.cost);if(!prior||after<prior.after||after===prior.after&&r.actions.length<prior.actions.length)dedup.set(r.cost,option);
+        }
+        function action(item,qty){return {...item,available:item.qty,qty,cost:qty*item.price};}
+        function required(threshold){return totalStrength*(1-(threshold/rating-floor)/(1-floor));}
+        function primaryQty(item,strengthSoFar,threshold,baseActions=[]){
+          if(impact){const calc=q=>impact(q?baseActions.concat(action(item,q)):baseActions);if(calc(0)<threshold)return 0;if(calc(item.qty)>=threshold)return null;let lo=1,hi=item.qty;while(lo<hi){const mid=lo+Math.floor((hi-lo)/2);if(calc(mid)<threshold)hi=mid;else lo=mid+1;}return lo;}
+          let q=Math.max(0,Math.floor((required(threshold)-strengthSoFar)/item.strength)+1);
+          if(q>item.qty)return null;
+          while(q>0&&afterFor(rating,totalStrength,strengthSoFar+(q-1)*item.strength,floor)<threshold)q--;
+          while(q<=item.qty&&afterFor(rating,totalStrength,strengthSoFar+q*item.strength,floor)>=threshold)q++;
+          return q<=item.qty?q:null;
+        }
+        offer({cost:0,strength:0,actions:[]});
+        for(const order of stackOrders(items)){
+          for(const spend of [limit,Math.floor(limit*.25),Math.floor(limit*.5),Math.floor(limit*.75)])offer(removal(order,spend));
+          if(totalCost<=budget)offer(removal(order,totalCost));
+          for(const threshold of thresholds){
+            let cost=0,strength=0,actions=[];
+            for(const item of order){
+              const qty=primaryQty(item,strength,threshold,actions);
+              if(qty!==null){offer({cost:cost+qty*item.price,strength:strength+qty*item.strength,actions:qty?actions.concat(action(item,qty)):actions},true);break;}
+              cost+=item.qty*item.price;strength+=item.qty*item.strength;if(item.qty)actions.push(action(item,item.qty));
+              if(cost>budget)break;
+            }
           }
         }
-      }
-    }
-    return [...dedup.values()].sort((a,b)=>a.cost-b.cost);
-  }
-  function pareto(plans){
-    const byScore=new Map();
-    for(const p of plans){const old=byScore.get(p.score);if(!old||p.cost<old.cost)byScore.set(p.score,p);}
-    const list=[...byScore.values()].sort((a,b)=>a.cost-b.cost||b.score-a.score),out=[];let best=-1;
-    for(const p of list)if(p.score>best){out.push(p);best=p.score;}
-    return out;
-  }
-  function portfolioFrontier(optionGroups,budget=Infinity){
-    let states=[{cost:0,score:0,picks:[]}];
-    for(const options of optionGroups){const next=[];for(const s of states)for(const o of options)if(s.cost+o.cost<=budget)next.push({cost:s.cost+o.cost,score:s.score+o.score,picks:o.cost?s.picks.concat(o):s.picks});states=pareto(next);}
-    return states.sort((a,b)=>b.score-a.score||a.cost-b.cost);
-  }
-  function optimize(optionGroups,budget){return portfolioFrontier(optionGroups,budget)[0]||{cost:0,score:0,picks:[]};}
-  const SPECIALISTS={sa:'attackPersonnel',da:'defensePersonnel',spy:'spies',sentry:'sentries',poison:'poisonUnits',antidote:'antidoteUnits',theft:'thieves',vigilance:'rangers'};
-  const UNIT_LABELS={sa:'Attack personnel',da:'Defense personnel',spy:'Covert Spies',sentry:'Sentries',poison:'Venomweavers',antidote:'Serpentwardens',theft:'Thieves',vigilance:'Rangers'};
-  function unitFor(target,f,now,overrides={}){
-    if(Object.prototype.hasOwnProperty.call(overrides,f))return integer(overrides[f])?{value:overrides[f],source:'manual scenario'}:null;
-    const candidates=[];
-    if(f==='sa'||f==='da'){
-      const names=f==='sa'?['attackSoldiers','attackMercenaries']:['defenseSoldiers','defenseMercenaries'],parts=names.map(name=>target.unitBreakdown&&target.unitBreakdown[name]),untrained=target.unitBreakdown&&target.unitBreakdown.untrained;
-      if(parts.every(part=>part&&integer(part.value)&&recent(part.at,now))){const include=untrained&&integer(untrained.value)&&recent(untrained.at,now);candidates.push({value:parts.reduce((sum,p)=>sum+p.value,0)+(include?untrained.value:0),source:include?'saved combat + untrained counts':'known combat counts; untrained unknown',at:Math.min(...parts.map(p=>p.at),...(include?[untrained.at]:[])),estimated:!include});}
-    }
-    const part=target.unitBreakdown&&target.unitBreakdown[SPECIALISTS[f]];
-    if(part&&integer(part.value)&&recent(part.at,now))candidates.push({value:part.value,source:'saved individual count',at:part.at});
-    const value=target.units&&target.units[f],at=target.fieldAt&&target.fieldAt['units.'+f]!==undefined?target.fieldAt['units.'+f]:target.at;
-    if(integer(value)&&recent(at,now)){const combat=f==='sa'||f==='da',untrained=target.unitBreakdown&&target.unitBreakdown.untrained,include=combat&&untrained&&integer(untrained.value)&&recent(untrained.at,now);candidates.push({value:value+(include?untrained.value:0),source:combat?(include?'saved combat + untrained counts':'saved combat count; untrained not confirmed'):'saved category count',at:include?Math.min(at,untrained.at):at,estimated:combat&&!include});}
-    candidates.sort((a,b)=>b.at-a.at);return candidates[0]||null;
-  }
-  function equippedStrength(items,personnel,actions=[]){
-    const removed=new Map(actions.map(a=>[key(a.name),a.qty]));let left=personnel,strength=0;
-    for(const item of items.slice().sort((a,b)=>b.strength-a.strength||a.name.localeCompare(b.name))){const qty=Math.min(left,Math.max(0,item.qty-(removed.get(key(item.name))||0)));strength+=qty*item.strength;left-=qty;if(left<=0)break;}return strength;
-  }
-  function run(board,id,local,budget,floor,now,settings={mode:"legacy"}){
-    const target=pooledTarget(board,id,local,now),inv=inventory(target,local,now,settings),groups=[],coverage=[],inventoryRows=[],reasons={};
-    for(const f of FIELDS){
-      const items=inv.groups[f];
-      if(valid(target[f])&&target[f]===0&&recent(stamp(target,f),now)&&!items){
-        const peers=peersFor(board,id,target,f,now),zero={f,cost:0,score:0,actions:[],after:0,before:0,samples:peers.length,full:false};
-        groups.push([zero]);coverage.push({f,count:peers.length});inventoryRows.push({f,items:[],knownCost:null,rating:0,samples:peers.length,effectiveFloor:1,unit:{value:null,source:'not needed for zero observed rating'},impact:null,method:'zero recorded rating; inventory unknown',options:[zero]});continue;
-      }
-      if(!items||!valid(target[f])||!recent(stamp(target,f),now)){reasons[f]='missing, stale or incomplete rating/inventory';continue;}
-      let effectiveFloor=floor,unit=null;
-      let impact=null,method='legacy residual scenario';
-      if(settings.mode==='units'){
-        unit=unitFor(target,f,now,settings.overrides||{});
-        if(target[f]===0){unit=unit||{value:null,source:'not needed for zero observed rating'};effectiveFloor=1;method='zero recorded rating';}
-        else{
-          if(!unit){reasons[f]='need recent '+UNIT_LABELS[f]+' count (or enter a manual count)';continue;}
-          const qty=items.reduce((sum,item)=>sum+item.qty,0),strength=items.reduce((sum,item)=>sum+item.qty*item.strength,0),held=equippedStrength(items,unit.value);
-          if(!(held+unit.value>0)){reasons[f]='zero personnel with positive rating: contribution unknown';continue;}
-          effectiveFloor=unit.value/(held+unit.value);
-          method=(f==='sa'||f==='da')?'SA/DA equipment estimate':qty>unit.value?'surplus / re-equipped estimate':'weapon strength + personnel';
-          if(qty>unit.value)impact=actions=>target[f]*(equippedStrength(items,unit.value,actions)+unit.value)/(held+unit.value);
+        for(let i=0;i<items.length;i++)for(let j=0;j<items.length;j++){
+          if(i===j)continue;const primary=items[i],secondary=items[j],others=items.filter((_,k)=>k!==i&&k!==j);
+          const masks=items.length<=4?Array.from({length:2**others.length},(_,k)=>k):[0,2**Math.min(others.length,20)-1];
+          for(const mask of masks){
+            const base=others.filter((_,k)=>k<20&&(mask&(2**k))),baseCost=base.reduce((s,a)=>s+a.qty*a.price,0),baseStrength=base.reduce((s,a)=>s+a.qty*a.strength,0);
+            if(baseCost>budget)continue;const max=Math.min(secondary.qty,Math.floor((budget-baseCost)/secondary.price));
+            for(const threshold of thresholds){
+              const values=new Set();
+              if(max<=128)for(let q=0;q<=max;q++)values.add(q);
+              else{
+                for(let q=0;q<=8;q++){values.add(q);values.add(max-q);values.add(Math.floor(max*q/8));}
+                for(const boundary of [(required(threshold)-baseStrength)/secondary.strength,(required(threshold)-baseStrength-primary.qty*primary.strength)/secondary.strength])for(let delta=-2;delta<=2;delta++)values.add(Math.max(0,Math.min(max,Math.floor(boundary)+delta)));
+              }
+              for(const q of values){
+                const strength=baseStrength+q*secondary.strength,baseActions=base.filter(a=>a.qty>0).map(a=>action(a,a.qty));if(q)baseActions.push(action(secondary,q));const qty=primaryQty(primary,strength,threshold,baseActions);if(qty===null)continue;
+                const cost=baseCost+q*secondary.price+qty*primary.price;if(cost>budget||!worth(cost,strength+qty*primary.strength))continue;
+                const actions=baseActions;if(qty)actions.push(action(primary,qty));
+                offer({cost,strength:strength+qty*primary.strength,actions},true);
+              }
+            }
+          }
         }
+        return [...dedup.values()].sort((a,b)=>a.cost-b.cost);
       }
-      const peers=peersFor(board,id,target,f,now);coverage.push({f,count:peers.length});
-      const opts=optionsFor(f,target[f],items,peers,budget,effectiveFloor,impact);groups.push(pareto(opts));
-      inventoryRows.push({f,items,knownCost:items.reduce((s,x)=>s+x.qty*x.price,0),rating:target[f],samples:peers.length,effectiveFloor,unit,impact,method,options:opts});
-    }
-    const frontier=portfolioFrontier(groups),best=frontier.filter(p=>p.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0]||{cost:0,score:0,picks:[]};
-    const nextPlan=frontier.filter(p=>p.score>best.score).sort((a,b)=>a.cost-b.cost||b.score-a.score)[0]||null;
-    const categoryChoices=inventoryRows.map(row=>({f:row.f,best:row.options.filter(o=>o.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0],fullCost:row.knownCost}));
-    const single=groups.flat().filter(o=>o.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0]||null;
-    const trioFields=['theft','antidote','poison'];let trio=null;
-    if(trioFields.every(f=>inventoryRows.some(row=>row.f===f&&row.knownCost!==null))){
-      const picks=trioFields.map(f=>{const row=inventoryRows.find(r=>r.f===f),strength=row.items.reduce((sum,a)=>sum+a.qty*a.strength,0),after=row.impact?row.impact(row.items.map(a=>({...a,qty:a.qty}))):afterFor(row.rating,strength,strength,row.effectiveFloor),peers=peersFor(board,id,target,f,now);return {f,cost:row.knownCost,score:peers.filter(p=>after<p.rating&&p.rating<row.rating).length,after,before:row.rating,samples:peers.length,full:true,actions:row.items.filter(a=>a.qty>0).map(a=>({...a,available:a.qty,cost:a.qty*a.price}))};});
-      trio={cost:picks.reduce((s,p)=>s+p.cost,0),score:picks.reduce((s,p)=>s+p.score,0),picks,affordable:picks.reduce((s,p)=>s+p.cost,0)<=budget};
-    }
-    const assessments=FIELDS.map(f=>{const row=inventoryRows.find(row=>row.f===f),choice=categoryChoices.find(c=>c.f===f);return {f,status:row?'modeled':'Unknown',method:row?row.method:reasons[f],score:choice?choice.best.score:null};});
-    return {best,single,trio,nextPlan,categoryChoices,assessments,coverage,inventoryRows,knownRows:inv.knownRows,notes:inv.notes,poolPartial:inv.partial,estimatedStrength:inventoryRows.filter(row=>row.items.some(a=>a.estimatedStrength)).map(row=>({f:row.f,items:row.items.filter(a=>a.estimatedStrength).map(a=>({name:a.name,strength:a.strength}))})),reasons,mode:settings.mode,excluded:FIELDS.filter(f=>!inventoryRows.some(r=>r.f===f))};
-  }
-  return {DAY,WINDOW,FIELDS,LABELS,CATALOG,valid,integer,recent,key,stamp,normalItem,mergeWeapon,projectWeapon,mergeCapture,pooledTarget,trackerCapture,inventory,budgetFor,peersFor,removal,afterFor,stackOrders,optionsFor,pareto,portfolioFrontier,optimize,SPECIALISTS,UNIT_LABELS,unitFor,equippedStrength,run};
-})();
+      function pareto(plans){
+        const byScore=new Map();
+        for(const p of plans){const old=byScore.get(p.score);if(!old||p.cost<old.cost)byScore.set(p.score,p);}
+        const list=[...byScore.values()].sort((a,b)=>a.cost-b.cost||b.score-a.score),out=[];let best=-1;
+        for(const p of list)if(p.score>best){out.push(p);best=p.score;}
+        return out;
+      }
+      function portfolioFrontier(optionGroups,budget=Infinity){
+        let states=[{cost:0,score:0,picks:[]}];
+        for(const options of optionGroups){const next=[];for(const s of states)for(const o of options)if(s.cost+o.cost<=budget)next.push({cost:s.cost+o.cost,score:s.score+o.score,picks:o.cost?s.picks.concat(o):s.picks});states=pareto(next);}
+        return states.sort((a,b)=>b.score-a.score||a.cost-b.cost);
+      }
+      function optimize(optionGroups,budget){return portfolioFrontier(optionGroups,budget)[0]||{cost:0,score:0,picks:[]};}
+      const SPECIALISTS={sa:'attackPersonnel',da:'defensePersonnel',spy:'spies',sentry:'sentries',poison:'poisonUnits',antidote:'antidoteUnits',theft:'thieves',vigilance:'rangers'};
+      const UNIT_LABELS={sa:'Attack personnel',da:'Defense personnel',spy:'Covert Spies',sentry:'Sentries',poison:'Venomweavers',antidote:'Serpentwardens',theft:'Thieves',vigilance:'Rangers'};
+      function unitFor(target,f,now,overrides={}){
+        if(Object.prototype.hasOwnProperty.call(overrides,f))return integer(overrides[f])?{value:overrides[f],source:'manual scenario'}:null;
+        const candidates=[];
+        if(f==='sa'||f==='da'){
+          const names=f==='sa'?['attackSoldiers','attackMercenaries']:['defenseSoldiers','defenseMercenaries'],parts=names.map(name=>target.unitBreakdown&&target.unitBreakdown[name]),untrained=target.unitBreakdown&&target.unitBreakdown.untrained;
+          if(parts.every(part=>part&&integer(part.value)&&recent(part.at,now))){const include=untrained&&integer(untrained.value)&&recent(untrained.at,now);candidates.push({value:parts.reduce((sum,p)=>sum+p.value,0)+(include?untrained.value:0),source:include?'saved combat + untrained counts':'known combat counts; untrained unknown',at:Math.min(...parts.map(p=>p.at),...(include?[untrained.at]:[])),estimated:!include});}
+        }
+        const part=target.unitBreakdown&&target.unitBreakdown[SPECIALISTS[f]];
+        if(part&&integer(part.value)&&recent(part.at,now))candidates.push({value:part.value,source:'saved individual count',at:part.at});
+        const value=target.units&&target.units[f],at=target.fieldAt&&target.fieldAt['units.'+f]!==undefined?target.fieldAt['units.'+f]:target.at;
+        if(integer(value)&&recent(at,now)){const combat=f==='sa'||f==='da',untrained=target.unitBreakdown&&target.unitBreakdown.untrained,include=combat&&untrained&&integer(untrained.value)&&recent(untrained.at,now);candidates.push({value:value+(include?untrained.value:0),source:combat?(include?'saved combat + untrained counts':'saved combat count; untrained not confirmed'):'saved category count',at:include?Math.min(at,untrained.at):at,estimated:combat&&!include});}
+        candidates.sort((a,b)=>b.at-a.at);return candidates[0]||null;
+      }
+      function equippedStrength(items,personnel,actions=[]){
+        const removed=new Map(actions.map(a=>[key(a.name),a.qty]));let left=personnel,strength=0;
+        for(const item of items.slice().sort((a,b)=>b.strength-a.strength||a.name.localeCompare(b.name))){const qty=Math.min(left,Math.max(0,item.qty-(removed.get(key(item.name))||0)));strength+=qty*item.strength;left-=qty;if(left<=0)break;}return strength;
+      }
+      function run(board,id,local,budget,floor,now,settings={mode:"legacy"}){
+        const target=pooledTarget(board,id,local,now),inv=inventory(target,local,now,settings),groups=[],coverage=[],inventoryRows=[],reasons={};
+        for(const f of FIELDS){
+          const items=inv.groups[f];
+          if(valid(target[f])&&target[f]===0&&recent(stamp(target,f),now)&&!items){
+            const peers=peersFor(board,id,target,f,now),zero={f,cost:0,score:0,actions:[],after:0,before:0,samples:peers.length,full:false};
+            groups.push([zero]);coverage.push({f,count:peers.length});inventoryRows.push({f,items:[],knownCost:null,rating:0,samples:peers.length,effectiveFloor:1,unit:{value:null,source:'not needed for zero observed rating'},impact:null,method:'zero recorded rating; inventory unknown',options:[zero]});continue;
+          }
+          if(!items||!valid(target[f])||!recent(stamp(target,f),now)){reasons[f]='missing, stale or incomplete rating/inventory';continue;}
+          let effectiveFloor=floor,unit=null;
+          let impact=null,method='legacy residual scenario';
+          if(settings.mode==='units'){
+            unit=unitFor(target,f,now,settings.overrides||{});
+            if(target[f]===0){unit=unit||{value:null,source:'not needed for zero observed rating'};effectiveFloor=1;method='zero recorded rating';}
+            else{
+              if(!unit){reasons[f]='need recent '+UNIT_LABELS[f]+' count (or enter a manual count)';continue;}
+              const qty=items.reduce((sum,item)=>sum+item.qty,0),strength=items.reduce((sum,item)=>sum+item.qty*item.strength,0),held=equippedStrength(items,unit.value);
+              if(!(held+unit.value>0)){reasons[f]='zero personnel with positive rating: contribution unknown';continue;}
+              effectiveFloor=unit.value/(held+unit.value);
+              method=(f==='sa'||f==='da')?'SA/DA equipment estimate':qty>unit.value?'surplus / re-equipped estimate':'weapon strength + personnel';
+              if(qty>unit.value)impact=actions=>target[f]*(equippedStrength(items,unit.value,actions)+unit.value)/(held+unit.value);
+            }
+          }
+          const peers=peersFor(board,id,target,f,now);coverage.push({f,count:peers.length});
+          const opts=optionsFor(f,target[f],items,peers,budget,effectiveFloor,impact);groups.push(pareto(opts));
+          inventoryRows.push({f,items,knownCost:items.reduce((s,x)=>s+x.qty*x.price,0),rating:target[f],samples:peers.length,effectiveFloor,unit,impact,method,options:opts});
+        }
+        const frontier=portfolioFrontier(groups),best=frontier.filter(p=>p.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0]||{cost:0,score:0,picks:[]};
+        const nextPlan=frontier.filter(p=>p.score>best.score).sort((a,b)=>a.cost-b.cost||b.score-a.score)[0]||null;
+        const categoryChoices=inventoryRows.map(row=>({f:row.f,best:row.options.filter(o=>o.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0],fullCost:row.knownCost}));
+        const single=groups.flat().filter(o=>o.cost<=budget).sort((a,b)=>b.score-a.score||a.cost-b.cost)[0]||null;
+        const trioFields=['theft','antidote','poison'];let trio=null;
+        if(trioFields.every(f=>inventoryRows.some(row=>row.f===f&&row.knownCost!==null))){
+          const picks=trioFields.map(f=>{const row=inventoryRows.find(r=>r.f===f),strength=row.items.reduce((sum,a)=>sum+a.qty*a.strength,0),after=row.impact?row.impact(row.items.map(a=>({...a,qty:a.qty}))):afterFor(row.rating,strength,strength,row.effectiveFloor),peers=peersFor(board,id,target,f,now);return {f,cost:row.knownCost,score:peers.filter(p=>after<p.rating&&p.rating<row.rating).length,after,before:row.rating,samples:peers.length,full:true,actions:row.items.filter(a=>a.qty>0).map(a=>({...a,available:a.qty,cost:a.qty*a.price}))};});
+          trio={cost:picks.reduce((s,p)=>s+p.cost,0),score:picks.reduce((s,p)=>s+p.score,0),picks,affordable:picks.reduce((s,p)=>s+p.cost,0)<=budget};
+        }
+        const assessments=FIELDS.map(f=>{const row=inventoryRows.find(row=>row.f===f),choice=categoryChoices.find(c=>c.f===f);return {f,status:row?'modeled':'Unknown',method:row?row.method:reasons[f],score:choice?choice.best.score:null};});
+        return {best,single,trio,nextPlan,categoryChoices,assessments,coverage,inventoryRows,knownRows:inv.knownRows,notes:inv.notes,poolPartial:inv.partial,estimatedStrength:inventoryRows.filter(row=>row.items.some(a=>a.estimatedStrength)).map(row=>({f:row.f,items:row.items.filter(a=>a.estimatedStrength).map(a=>({name:a.name,strength:a.strength}))})),reasons,mode:settings.mode,excluded:FIELDS.filter(f=>!inventoryRows.some(r=>r.f===f))};
+      }
+      return {DAY,WINDOW,FIELDS,LABELS,CATALOG,valid,integer,recent,key,stamp,normalItem,mergeWeapon,projectWeapon,mergeCapture,pooledTarget,trackerCapture,inventory,budgetFor,peersFor,removal,afterFor,stackOrders,optionsFor,pareto,portfolioFrontier,optimize,SPECIALISTS,UNIT_LABELS,unitFor,equippedStrength,run};
+    })();
 
-  const STORE='jf_sab_lab_inventory_v1';
-  function readJSON(key,fallback){try{const value=JSON.parse(localStorage.getItem(key)||'null');return value&&typeof value==='object'?value:fallback;}catch(_){return fallback;}}
-  function board(){return state;}
-  function archive(){const value=readJSON(STORE,{version:1,players:{}});return (value.version===1||value.version===2)&&value.players&&typeof value.players==='object'?value:{version:1,players:{}};}
-  function localFor(t,id){const players=archive().players,byName=players[Lab.key(t.name)];if(byName&&(!byName.id||String(byName.id)===String(id)))return byName;return Object.values(players).find(p=>String(p.id)===String(id));}
-  function profileId(){return /\/stats\.php$/i.test(location.pathname)&&/^\d+$/.test(new URLSearchParams(location.search).get('id')||'')?new URLSearchParams(location.search).get('id'):null;}
-  let websitePending=null,websiteStatus=null;
-  function importWebsite(payload){
-    const id=profileId();if(!jfAuthorized||!id)throw Error('Open a numeric target profile first.');
-    const b=board(),base=(b.targets||{})[id]||{},prior=localFor(base,id),capture=Lab.trackerCapture(payload,id,Date.now()),local=archive();
-    const name=prior&&prior.name||base.name||capture.name;
-    if(prior&&prior.id&&String(prior.id)!==String(id))throw Error('Target identity mismatch.');
-    capture.name=name;capture.observationKey='website:'+id+':'+capture.scanAt;
-    local.version=1;local.schemaRevision=2;local.players[Lab.key(name)]=Lab.mergeCapture(prior,capture);
-    localStorage.setItem(STORE,JSON.stringify(local));if(websiteStatus)websiteStatus.textContent=payload.truncated?'Merged the capped website export (latest 20,000 readings).':'Merged website observations from the last 30 days.';renderResult(true);
-  }
-  function loadWebsite(event){
-    event?.preventDefault?.();event?.stopPropagation?.();const id=profileId();if(!jfAuthorized||!id)return;
-    const origin=location.origin||new URL(location.href).origin;
-    const nonce=globalThis.crypto&&crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random().toString(36).slice(2);
-    const url='https://jfactiongaming.com/tracker_sab_bridge.php?player='+encodeURIComponent(id)+'&origin='+encodeURIComponent(origin)+'&request='+encodeURIComponent(nonce);
-    const popup=window.open(url,'jf-sab-website-import','width=760,height=600');websitePending={id,nonce,popup};
-    websiteStatus.textContent=popup?'Website opened. Waiting for the signed-in website to send saved intel…':'Popup blocked. Allow this website window and try again.';
-    if(popup)setTimeout(()=>{if(websitePending&&websitePending.nonce===nonce)websiteStatus.textContent='No website response yet. Check that the helper file is installed and the website tab is signed in; JSON import is available under Local tools.';},30000);
-  }
-  function receiveWebsite(event){
-    const pending=websitePending,data=event.data;
-    if(!pending||event.origin!=='https://jfactiongaming.com'||event.source!==pending.popup||!data||data.type!=='JF_SAB_POOL_V1'||data.request!==pending.nonce)return;
-    if(String(data.payload&&data.payload.target_id)!==String(pending.id)||profileId()!==pending.id){websiteStatus.textContent='Website target did not match; no data imported.';return;}
-    try{importWebsite(data.payload);websitePending=null;}catch(error){websiteStatus.textContent='Website import failed: '+(error.message||String(error));}
-  }
-  if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('message',receiveWebsite);
-  const money=n=>n===null?'Unknown':n>=1e12?(n/1e12).toFixed(3)+'T':n>=1e9?(n/1e9).toFixed(3)+'B':Math.round(n).toLocaleString();
-  const num=n=>Math.round(n).toLocaleString();
-  const age=at=>at?Math.max(0,(Date.now()-at)/3600000).toFixed(1)+'h since collection':'age unknown';
-  function displayText(value){return String(value).replace(/SR catalog(?: estimate)?/g,'estimate');}
-  function node(tag,text,style){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(style)el.style.cssText=style;return el;}
-  function table(headers,rows){const wrap=node('div',undefined,'overflow-x:auto'),t=node('table',undefined,'width:100%;font-size:12px;border-collapse:collapse');const hr=node('tr');for(const h of headers)hr.appendChild(node('th',displayText(h),'text-align:left;padding:6px;border-bottom:1px solid #777'));t.appendChild(hr);for(const values of rows){const r=node('tr');for(const value of values)r.appendChild(node('td',displayText(value),'padding:6px;vertical-align:top;border-bottom:1px solid #555'));t.appendChild(r);}wrap.appendChild(t);return wrap;}
-  function textLine(parent,text){parent.appendChild(node('p',displayText(text),'margin:6px 0;font-size:12px'));}
-  let budgetInput,floorInput,modeInput,catalogInput,floorContainer,unitInputs={},output,budgetNote,activeId,actionStatus,lastData='',calculationPending=false,clickCount=0;
-  function renderResult(force=true){
-    const id=profileId();if(!jfAuthorized||!id||!output)return;
-    const b=board(),base=(b.targets||{})[id]||{},local=localFor(base,id),now=Date.now(),t=Lab.pooledTarget(b,id,local,now);
-    const signature=JSON.stringify([b,local,budgetInput.value,floorInput.value,modeInput.value,catalogInput.checked,Object.fromEntries(Object.entries(unitInputs).map(([f,input])=>[f,input.value])),Math.floor(now/60000)]);if(!force&&signature===lastData)return;lastData=signature;
-    const opened=[...output.querySelectorAll('details')].filter(d=>d.open).map(d=>d.querySelectorAll('summary')[0]?.textContent);
-    output.replaceChildren();
-    const raw=budgetInput.value.trim().replace(/,/g,''),budget=/^\d+$/.test(raw)?Number(raw):NaN;
-    if(!Lab.integer(budget)){textLine(output,'Enter a non-negative whole Gold scenario budget.');return;}
-    const overrides={};
-    for(const [f,input] of Object.entries(unitInputs)){const text=input.value.trim().replace(/,/g,'');if(!text)continue;const value=/^\d+$/.test(text)?Number(text):NaN;if(!Lab.integer(value)){textLine(output,'Enter a non-negative whole personnel count for '+Lab.LABELS[f]+', or leave it blank to use saved data.');return;}overrides[f]=value;}
-    const settings={mode:modeInput.value,overrides,allowCatalogStrength:!!catalogInput.checked},floor=Number(floorInput.value),result=Lab.run(b,id,local,budget,floor,now,settings);
-    const info=Lab.budgetFor(t,(b.tiv||{})[id],now);budgetNote.textContent=(info.at?'Saved allowance: '+age(info.at)+'. ':'No dated allowance. ')+'Confirm remaining budget.';
-    const planDetails=node('details');planDetails.open=opened.includes('Plan details');planDetails.appendChild(node('summary','Plan details'));
-    function details(title){const d=node('details');d.open=opened.includes(title);d.appendChild(node('summary',title));planDetails.appendChild(d);return d;}
-    const best=result.best,single=result.single,picks=best.picks.slice().sort((a,b)=>b.score/Math.max(1,b.cost)-a.score/Math.max(1,a.cost)||a.cost-b.cost);
-    textLine(output,(t.name||'#'+id)+' · '+result.inventoryRows.length+'/8 categories modeled'+(settings.mode==='legacy'?' · Legacy scenario':''));
-    const flags=[];
-    if(result.excluded.length)flags.push('Unknown: '+result.excluded.map(f=>Lab.LABELS[f]).join(', '));
-    if(result.estimatedStrength.length)flags.push('~ Estimated strength used');
-    if(result.poolPartial)flags.push('Partial inventory');
-    if(flags.length)textLine(output,flags.join(' · '));
-    if(best.score>0){
-      output.appendChild(node('strong','~ Suggested combination: '+picks.map(p=>Lab.LABELS[p.f]).join(' + '),'display:block;margin:8px 0;color:#e8c766'));
-      textLine(output,'Budget '+money(budget)+' · ~ Plan cost '+money(best.cost)+' · ~ Left '+money(budget-best.cost));
-      textLine(output,'~ '+best.score+' category places lost within saved players. Overall leaderboard loss: unknown.');
-      output.appendChild(table(['Weapon / category','Destroy total','~ Cost'],picks.flatMap(p=>p.actions.map(a=>{
-        return [a.name+' ('+Lab.LABELS[p.f]+')',num(a.qty),money(a.cost)];
-      }))));
-      textLine(planDetails,result.nextPlan?'Next tested plan with more crossings costs ~'+money(result.nextPlan.cost)+' — '+money(result.nextPlan.cost-budget)+' over budget.':'The remaining budget adds no observed crossing in the tested plans; further rating damage may still be possible.');
-    }else if(!result.inventoryRows.length){textLine(output,'No eligible category yet. Open Plan details → Data & exclusions for missing inputs.');}
-    else textLine(output,'No estimated category places lost within saved players. The comparison pool may be incomplete.');
-    textLine(output,'~ Estimates · Total quantities, not per mission.');
-    output.appendChild(planDetails);
-    const all=details('All 8 category comparisons');
-    all.appendChild(table(['Category','Assessment','~ Places in saved sample','Method / data needed'],result.assessments.map(a=>[Lab.LABELS[a.f],a.status==='modeled'?'Estimate':'Unknown',a.score===null?'Unknown':a.score,a.method])));
-    const why=details('Why this combination?');
-    textLine(why,'Score counts only saved opponents passed in each category, not overall ranks lost.');
-    textLine(why,'Model: '+(settings.mode==='units'?'Unit-aware candidate':'Legacy residual assumption '+Math.round(floor*100)+'%')+'.');
-    textLine(why,'~ Best single category: '+(single&&single.score>0?Lab.LABELS[single.f]+' · '+single.score+' category places in saved players · '+money(single.cost):'none in this sample')+'.');
-    if(picks.length)why.appendChild(table(['Weapon / category','Destroy total','Known left'],picks.flatMap(p=>p.actions.map(a=>{const original=result.inventoryRows.find(row=>row.f===p.f)?.items.find(item=>Lab.key(item.name)===Lab.key(a.name)),available=a.available??original?.qty;return [a.name+' ('+Lab.LABELS[p.f]+')',num(a.qty),Lab.integer(available)?num(available-a.qty):'Unknown'];}))));
-    if(picks.length)why.appendChild(table(['Category','Recorded rating','~ After','~ Crossings / peers'],picks.map(p=>[Lab.LABELS[p.f],num(p.before),num(p.after),p.score+' / '+p.samples])));
-    if(result.categoryChoices.length)why.appendChild(table(['Category alternative','~ Most crossings within budget','~ Cost for that score','~ Full known wipe cost'],result.categoryChoices.map(row=>[Lab.LABELS[row.f],row.best.score,money(row.best.cost),money(row.fullCost)])));
-    const trio=result.trio;
-    textLine(why,'~ Full known Theft + Antidote + Poison: '+(trio?money(trio.cost)+' · '+(trio.affordable?'fits budget':'OVER budget by '+money(trio.cost-budget))+' · '+trio.score+' modeled crossings':'Unknown — need eligible inventory, ratings and specialist counts for all three.'));
-    textLine(why,'The search maximizes modeled crossings, then prefers lower cost. It tests stack orders and partial two-stack mixes; it is not a guaranteed unrestricted optimum. A given opponent crossed in two categories counts twice. Table order is for readability, not a verified mission sequence.');
-    const data=details('Data & exclusions');
-    textLine(data,'Budget source: '+info.text+(info.at?' ('+age(info.at)+')':'')+'. Edited budgets are manual scenarios.');
-    textLine(data,'Target pool: last 30 days of saved observations'+(local?' · '+Object.keys(local.observations||{}).length+' captured sources':'')+'.');
-    if(result.estimatedStrength.length)textLine(data,'~ Estimated current strength used: '+result.estimatedStrength.map(row=>Lab.LABELS[row.f]+' ('+row.items.map(a=>a.name+' ~'+num(a.strength)).join(', ')+')').join(' · ')+'. Catalog condition, not observed.');
-    textLine(data,'Local report capture: '+(local&&local.scanAt?Object.keys(local.items||{}).length+' named rows · '+(local.unresolved||[]).length+' unresolved rows · '+age(local.scanAt):'none yet on this hostname for this target.'));
-    if(settings.mode==='units'&&result.inventoryRows.length)textLine(data,'Personnel used: '+result.inventoryRows.map(row=>Lab.LABELS[row.f]+' '+(row.unit.value===null?'Unknown':num(row.unit.value))+' ('+row.unit.source+(row.unit.at?', '+age(row.unit.at):'')+')').join(' · '));
-    if(result.excluded.length)textLine(data,'Excluded: '+result.excluded.map(f=>Lab.LABELS[f]+' ('+result.reasons[f]+')').join(' · ')+'.');
-    result.notes.forEach(n=>textLine(data,n));
-    if(result.knownRows.length)data.appendChild(table(['Category / weapon','Known qty','Current strength','Unit price','Collected'],result.knownRows.map(a=>[(Lab.LABELS[a.f]||'Unknown')+' / '+a.name,a.qty===null?'Unknown':num(a.qty),a.currentStrength===null||a.currentStrength===undefined?'Unknown':(a.strengthSource==='observed'?'':'~ ')+num(a.currentStrength)+' / '+a.strengthSource,a.price===null?'Unknown':(a.priceSource==='recorded'?'':'~ ')+num(a.price),age(a.at)+(a.qtyCarried?' · quantity carried':'')+(a.strengthCarried?' · strength carried ('+age(a.strengthAt)+')':a.strengthUnknown?' · strength hidden':'')])));
-    textLine(data,'Observed peers: '+result.coverage.map(c=>Lab.LABELS[c.f]+' '+c.count).join(' · '));
-    textLine(data,'Unit-aware formula holds personnel and multipliers fixed. Taxes checks: Theft within 2 rating points; Poison within 13. SA/DA and surplus equipment use an SR-style equipped-strength estimate. Those mechanics and full wipes remain unverified.');
-    textLine(data,'~ marks estimated values. Fields merge newest-known within 30 days; collection age does not prove report age. Missing intel and changing multipliers can alter the result. No exact overall rank is predicted; no missions are performed. Planner settings and plans stay on this device.');
-    const legacy=details('Legacy comparison: 0%, 10%, 25% residual scenarios');let legacyBuilt=false;
-    function showLegacy(){if(!legacy.open||legacyBuilt)return;legacyBuilt=true;try{
-      const rows=[0,.1,.25].map(f=>{const r=Lab.run(b,id,local,budget,f,now,{mode:'legacy',allowCatalogStrength:!!catalogInput.checked}),p=r.best;return [Math.round(f*100)+'%',p.score?p.picks.map(x=>Lab.LABELS[x.f]).join(' + '):'No positive crossings',p.score,money(p.cost)];});
-      legacy.appendChild(table(['Legacy residual','~ Best tested categories','~ Crossings','~ Cost'],rows));
-    }catch(error){textLine(legacy,'Legacy comparison unavailable: '+(error.message||String(error)));}}
-    legacy.addEventListener('toggle',showLegacy);showLegacy();
-  }
-  function compare(event){
-    if(event){event.preventDefault?.();event.stopPropagation?.();}
-    if(calculationPending)return;
-    calculationPending=true;clickCount++;
-    actionStatus.textContent='Comparing local intel…';
-    setTimeout(()=>{
-      try{renderResult(true);actionStatus.textContent='Plan updated.';}
-      catch(error){actionStatus.textContent='Comparison could not finish: '+(error.message||String(error));console.error('Sab Advisor comparison:',error);}
-      finally{calculationPending=false;}
-    },0);
-  }
-  function mount(){
-    const id=profileId();if(!jfAuthorized||!id||document.getElementById('jf-sab'))return;
-    activeId=id;const b=board(),base=(b.targets||{})[id]||{},target=Lab.pooledTarget(b,id,localFor(base,id),Date.now()),info=Lab.budgetFor(target,(b.tiv||{})[id],Date.now());
-    const host=node('div');host.id='jf-sab';host.className='jf-block';
-    const isolated=host.attachShadow?host.attachShadow({mode:'open'}):host;
-    const css=node('style',':host{display:block;position:relative;isolation:isolate;color:#eee;background:#111;font:13px Arial,sans-serif;line-height:1.45}*{box-sizing:border-box}button,input,select{font:inherit!important;pointer-events:auto!important;visibility:visible!important;opacity:1!important}button{display:inline-block!important;appearance:auto!important;cursor:pointer!important;background:#e8c766!important;color:#17130a!important;border:1px solid #a88b31!important;border-radius:4px!important;padding:8px 12px!important;min-height:36px!important}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #73b9ff!important;outline-offset:2px}input,select{border:1px solid #777!important;border-radius:3px!important}summary{cursor:pointer;color:#e8c766;padding:7px 0}details{margin:5px 0}details>table{margin-top:5px}table{display:table;width:100%;color:inherit;background:transparent}p{line-height:1.4}p:empty,div:empty,span:empty{display:none}th,td{overflow-wrap:anywhere}summary{font-weight:600}button{padding:5px 9px!important;min-height:32px!important}@media(max-width:540px){th,td{padding:4px!important}input{max-width:100%}}');isolated.appendChild(css);
-    const box=node('div',undefined,'border:2px solid #c9a227;padding:10px;margin:10px 0;max-width:100%;color:inherit;background:inherit;box-sizing:border-box');box.className='jf-block';isolated.appendChild(box);
-    box.appendChild(node('strong','Sab Advisor'));
+    function board(){return state;}
+    function archive(){return {version:1,players:{}};}
+    function localFor(t,id){return null;}
+    function profileId(){return /\/stats\.php$/i.test(location.pathname)&&/^\d+$/.test(new URLSearchParams(location.search).get('id')||'')?new URLSearchParams(location.search).get('id'):null;}
+    let websitePending=null,websiteStatus=null;
+    function importWebsite(payload){}
+    function loadWebsite(event){}
+    function receiveWebsite(event){}
 
-    const controls=node('div',undefined,'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0');
-    const budgetLabel=node('label','Remaining budget (Gold) ');budgetInput=node('input');budgetInput.type='text';budgetInput.inputMode='numeric';budgetInput.value=info.value===null?'':String(info.value);budgetInput.style.cssText='width:170px;color:#111;background:#fff;padding:4px';budgetLabel.appendChild(budgetInput);controls.appendChild(budgetLabel);
-    const settings=node('details');settings.appendChild(node('summary','Settings'));
-    const modelControls=node('div',undefined,'display:flex;flex-wrap:wrap;gap:8px;align-items:center');settings.appendChild(modelControls);
-    const modeLabel=node('label','Model ');modeInput=node('select');for(const [value,label] of [['units','Unit-aware candidate (all 8)'],['legacy','Legacy residual scenario']]){const option=node('option',label);option.value=value;modeInput.appendChild(option);}modeInput.value='units';modeInput.style.cssText='color:#111;background:#fff;padding:4px';modeLabel.appendChild(modeInput);modelControls.appendChild(modeLabel);
-    const floorLabel=node('label','Legacy residual assumption ');floorContainer=floorLabel;floorContainer.style.display='none';floorInput=node('select');for(const f of [0,.1,.25]){const option=node('option',Math.round(f*100)+'%');option.value=String(f);floorInput.appendChild(option);}floorInput.value='0.1';floorInput.disabled=true;floorInput.style.cssText='color:#111;background:#fff;padding:4px';floorLabel.appendChild(floorInput);modelControls.appendChild(floorLabel);
-    const calculate=node('button','Compare plans');calculate.type='button';calculate.disabled=false;calculate.addEventListener('click',compare);controls.appendChild(calculate);box.appendChild(controls);
-    const estimateLabel=node('label','', 'display:block;margin:7px 0;font-size:12px');catalogInput=node('input');catalogInput.type='checkbox';catalogInput.checked=true;catalogInput.addEventListener('change',compare);estimateLabel.appendChild(catalogInput);estimateLabel.appendChild(node('span',' Use estimated strength when hidden (scenario only)'));settings.appendChild(estimateLabel);
-    const siteControls=node('div',undefined,'margin:6px 0');const siteButton=node('button','Load website intel');siteButton.type='button';siteButton.addEventListener('click',loadWebsite);controls.appendChild(siteButton);websiteStatus=node('span','','font-size:12px');siteControls.appendChild(websiteStatus);box.appendChild(siteControls);
-    budgetInput.addEventListener('keydown',event=>{if(event.key==='Enter')compare(event);});
-    budgetInput.addEventListener('change',compare);floorInput.addEventListener('change',compare);modeInput.addEventListener('change',()=>{floorInput.disabled=modeInput.value==='units';floorContainer.style.display=modeInput.value==='units'?'none':'';compare();});
-    const counts=node('details');counts.appendChild(node('summary','Specialist counts — saved or manual for this page'));
-    textLine(counts,'Leave blank to use a recent saved count. A number entered here is a manual scenario for this target and is not saved or uploaded.');
-    for(const f of Object.keys(Lab.SPECIALISTS)){const row=node('label',Lab.LABELS[f]+' / '+Lab.UNIT_LABELS[f]+' ', 'display:block;margin:5px 0'),input=node('input'),saved=Lab.unitFor(target,f,Date.now());input.type='text';input.inputMode='numeric';input.value='';input.placeholder=saved?'Saved: '+num(saved.value):'Unknown — enter known count';input.style.cssText='width:220px;color:#111;background:#fff;padding:4px';input.addEventListener('change',compare);input.addEventListener('keydown',event=>{if(event.key==='Enter')compare(event);});unitInputs[f]=input;row.appendChild(input);counts.appendChild(row);}settings.appendChild(counts);
-    actionStatus=node('p','','font-size:12px;margin:6px 0;color:#e8c766');actionStatus.setAttribute('role','status');actionStatus.setAttribute('aria-live','polite');box.appendChild(actionStatus);
-    budgetNote=node('p',info.text,'font-size:12px;margin:6px 0');box.appendChild(budgetNote);output=node('div');box.appendChild(output);
-    const tools=node('details');tools.appendChild(node('summary','Local tools'));settings.appendChild(tools);
-    const importLabel=node('label','Import website JSON ', 'display:block;margin:6px 0'),fileInput=node('input');fileInput.type='file';fileInput.accept='application/json,.json';fileInput.addEventListener('change',async()=>{const file=fileInput.files&&fileInput.files[0];if(!file)return;try{if(file.size>8388608)throw Error('JSON file exceeds 8 MB.');importWebsite(JSON.parse(await file.text()));}catch(error){websiteStatus.textContent='Import failed: '+(error.message||String(error));}});importLabel.appendChild(fileInput);tools.appendChild(importLabel);
-    const clear=node('button','Clear local planner cache');clear.type='button';clear.style.cssText='margin-top:8px;font-size:11px';clear.addEventListener('click',()=>{try{localStorage.removeItem(STORE);}catch(_){}renderResult();});tools.appendChild(clear);
-    box.appendChild(settings);
-    const hist=document.getElementById('jf-hist'),war=document.getElementById('jf-war');if(hist&&hist.parentNode)hist.parentNode.insertBefore(host,hist);else if(war&&war.parentNode)war.parentNode.insertBefore(host,war.nextSibling);else document.body.appendChild(host);
-    try{renderResult();}catch(error){actionStatus.textContent='Initial comparison could not finish: '+(error.message||String(error));}
+    const money=n=>n===null?'Unknown':n>=1e12?(n/1e12).toFixed(3)+'T':n>=1e9?(n/1e9).toFixed(3)+'B':Math.round(n).toLocaleString();
+    const num=n=>Math.round(n).toLocaleString();
+    const age=at=>at?Math.max(0,(Date.now()-at)/3600000).toFixed(1)+'h since collection':'age unknown';
+    function displayText(value){return String(value).replace(/SR catalog(?: estimate)?/g,'estimate');}
+    function node(tag,text,style){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(style)el.style.cssText=style;return el;}
+    function table(headers,rows){const wrap=node('div',undefined,'overflow-x:auto'),t=node('table',undefined,'width:100%;font-size:12px;border-collapse:collapse');const hr=node('tr');for(const h of headers)hr.appendChild(node('th',displayText(h),'text-align:left;padding:6px;border-bottom:1px solid #777'));t.appendChild(hr);for(const values of rows){const r=node('tr');for(const value of values)r.appendChild(node('td',displayText(value),'padding:6px;vertical-align:top;border-bottom:1px solid #555'));t.appendChild(r);}wrap.appendChild(t);return wrap;}
+    function textLine(parent,text){parent.appendChild(node('p',displayText(text),'margin:6px 0;font-size:12px'));}
+    let budgetInput,floorInput,modeInput,catalogInput,floorContainer,unitInputs={},output,budgetNote,activeId,actionStatus,lastData='',calculationPending=false,clickCount=0;
+
+    function renderResult(force=true){
+      const id=profileId();if(!jfAuthorized||!id||!output)return;
+      const b=board(),base=(b.targets||{})[id]||{},local=localFor(base,id),now=Date.now(),t=Lab.pooledTarget(b,id,local,now);
+      const signature=JSON.stringify([b,local,budgetInput.value,floorInput.value,modeInput.value,catalogInput.checked,Object.fromEntries(Object.entries(unitInputs).map(([f,input])=>[f,input.value])),Math.floor(now/60000)]);if(!force&&signature===lastData)return;lastData=signature;
+      const opened=[...output.querySelectorAll('details')].filter(d=>d.open).map(d=>d.querySelectorAll('summary')[0]?.textContent);
+      output.replaceChildren();
+      const raw=budgetInput.value.trim().replace(/,/g,''),budget=/^\d+$/.test(raw)?Number(raw):NaN;
+      if(!Lab.integer(budget)){textLine(output,'Enter a non-negative whole Gold scenario budget.');return;}
+      const overrides={};
+      for(const [f,input] of Object.entries(unitInputs)){const text=input.value.trim().replace(/,/g,'');if(!text)continue;const value=/^\d+$/.test(text)?Number(text):NaN;if(!Lab.integer(value)){textLine(output,'Enter a non-negative whole personnel count for '+Lab.LABELS[f]+', or leave it blank to use saved data.');return;}overrides[f]=value;}
+      const settings={mode:modeInput.value,overrides,allowCatalogStrength:!!catalogInput.checked},floor=Number(floorInput.value),result=Lab.run(b,id,local,budget,floor,now,settings);
+      const info=Lab.budgetFor(t,(b.tiv||{})[id],now);budgetNote.textContent=(info.at?'Saved allowance: '+age(info.at)+'. ':'No dated allowance. ')+'Confirm remaining budget.';
+      const planDetails=node('details');planDetails.open=opened.includes('Plan details');planDetails.appendChild(node('summary','Plan details'));
+      function details(title){const d=node('details');d.open=opened.includes(title);d.appendChild(node('summary',title));planDetails.appendChild(d);return d;}
+      const best=result.best,single=result.single,picks=best.picks.slice().sort((a,b)=>b.score/Math.max(1,b.cost)-a.score/Math.max(1,a.cost)||a.cost-b.cost);
+      textLine(output,(t.name||'#'+id)+' · '+result.inventoryRows.length+'/8 categories modeled'+(settings.mode==='legacy'?' · Legacy scenario':''));
+      const flags=[];
+      if(result.excluded.length)flags.push('Unknown: '+result.excluded.map(f=>Lab.LABELS[f]).join(', '));
+      if(result.estimatedStrength.length)flags.push('~ Estimated strength used');
+      if(result.poolPartial)flags.push('Partial inventory');
+      if(flags.length)textLine(output,flags.join(' · '));
+      if(best.score>0){
+        output.appendChild(node('strong','~ Suggested combination: '+picks.map(p=>Lab.LABELS[p.f]).join(' + '),'display:block;margin:8px 0;color:#e8c766'));
+        textLine(output,'Budget '+money(budget)+' · ~ Plan cost '+money(best.cost)+' · ~ Left '+money(budget-best.cost));
+        textLine(output,'~ '+best.score+' category places lost within saved players. Overall leaderboard loss: unknown.');
+        output.appendChild(table(['Weapon / category','Destroy total','~ Cost'],picks.flatMap(p=>p.actions.map(a=>{
+          return [a.name+' ('+Lab.LABELS[p.f]+')',num(a.qty),money(a.cost)];
+        }))));
+        textLine(planDetails,result.nextPlan?'Next tested plan with more crossings costs ~'+money(result.nextPlan.cost)+' — '+money(result.nextPlan.cost-budget)+' over budget.':'The remaining budget adds no observed crossing in the tested plans; further rating damage may still be possible.');
+      }else if(!result.inventoryRows.length){textLine(output,'No eligible category yet. Open Plan details → Data & exclusions for missing inputs.');}
+      else textLine(output,'No estimated category places lost within saved players. The comparison pool may be incomplete.');
+      textLine(output,'~ Estimates · Total quantities, not per mission.');
+      output.appendChild(planDetails);
+      const all=details('All 8 category comparisons');
+      all.appendChild(table(['Category','Assessment','~ Places in saved sample','Method / data needed'],result.assessments.map(a=>[Lab.LABELS[a.f],a.status==='modeled'?'Estimate':'Unknown',a.score===null?'Unknown':a.score,a.method])));
+      const why=details('Why this combination?');
+      textLine(why,'Score counts only saved opponents passed in each category, not overall ranks lost.');
+      textLine(why,'Model: '+(settings.mode==='units'?'Unit-aware candidate':'Legacy residual assumption '+Math.round(floor*100)+'%')+'.');
+      textLine(why,'~ Best single category: '+(single&&single.score>0?Lab.LABELS[single.f]+' · '+single.score+' category places in saved players · '+money(single.cost):'none in this sample')+'.');
+      if(picks.length)why.appendChild(table(['Weapon / category','Destroy total','Known left'],picks.flatMap(p=>p.actions.map(a=>{const original=result.inventoryRows.find(row=>row.f===p.f)?.items.find(item=>Lab.key(item.name)===Lab.key(a.name)),available=a.available??original?.qty;return [a.name+' ('+Lab.LABELS[p.f]+')',num(a.qty),Lab.integer(available)?num(available-a.qty):'Unknown'];}))));
+      if(picks.length)why.appendChild(table(['Category','Recorded rating','~ After','~ Crossings / peers'],picks.map(p=>[Lab.LABELS[p.f],num(p.before),num(p.after),p.score+' / '+p.samples])));
+      if(result.categoryChoices.length)why.appendChild(table(['Category alternative','~ Most crossings within budget','~ Cost for that score','~ Full known wipe cost'],result.categoryChoices.map(row=>[Lab.LABELS[row.f],row.best.score,money(row.best.cost),money(row.fullCost)])));
+      const trio=result.trio;
+      textLine(why,'~ Full known Theft + Antidote + Poison: '+(trio?money(trio.cost)+' · '+(trio.affordable?'fits budget':'OVER budget by '+money(trio.cost-budget))+' · '+trio.score+' modeled crossings':'Unknown — need eligible inventory, ratings and specialist counts for all three.'));
+      textLine(why,'The search maximizes modeled crossings, then prefers lower cost. It tests stack orders and partial two-stack mixes; it is not a guaranteed unrestricted optimum. A given opponent crossed in two categories counts twice. Table order is for readability, not a verified mission sequence.');
+      const data=details('Data & exclusions');
+      textLine(data,'Budget source: '+info.text+(info.at?' ('+age(info.at)+')':'')+'. Edited budgets are manual scenarios.');
+      textLine(data,'Target pool: last 30 days of saved observations.');
+      if(result.estimatedStrength.length)textLine(data,'~ Estimated current strength used: '+result.estimatedStrength.map(row=>Lab.LABELS[row.f]+' ('+row.items.map(a=>a.name+' ~'+num(a.strength)).join(', ')+')').join(' · ')+'. Catalog condition, not observed.');
+      textLine(data,'Local report capture: none yet on this hostname for this target.');
+      if(settings.mode==='units'&&result.inventoryRows.length)textLine(data,'Personnel used: '+result.inventoryRows.map(row=>Lab.LABELS[row.f]+' '+(row.unit.value===null?'Unknown':num(row.unit.value))+' ('+row.unit.source+(row.unit.at?', '+age(row.unit.at):'')+')').join(' · '));
+      if(result.excluded.length)textLine(data,'Excluded: '+result.excluded.map(f=>Lab.LABELS[f]+' ('+result.reasons[f]+')').join(' · ')+'.');
+      result.notes.forEach(n=>textLine(data,n));
+      if(result.knownRows.length)data.appendChild(table(['Category / weapon','Known qty','Current strength','Unit price','Collected'],result.knownRows.map(a=>[(Lab.LABELS[a.f]||'Unknown')+' / '+a.name,a.qty===null?'Unknown':num(a.qty),a.currentStrength===null||a.currentStrength===undefined?'Unknown':(a.strengthSource==='observed'?'':'~ ')+num(a.currentStrength)+' / '+a.strengthSource,a.price===null?'Unknown':(a.priceSource==='recorded'?'':'~ ')+num(a.price),age(a.at)+(a.qtyCarried?' · quantity carried':'')+(a.strengthCarried?' · strength carried ('+age(a.strengthAt)+')':a.strengthUnknown?' · strength hidden':'')])));
+      textLine(data,'Observed peers: '+result.coverage.map(c=>Lab.LABELS[c.f]+' '+c.count).join(' · '));
+      textLine(data,'Unit-aware formula holds personnel and multipliers fixed. Taxes checks: Theft within 2 rating points; Poison within 13. SA/DA and surplus equipment use an SR-style equipped-strength estimate. Those mechanics and full wipes remain unverified.');
+      textLine(data,'~ marks estimated values. Fields merge newest-known within 30 days; collection age does not prove report age. Missing intel and changing multipliers can alter the result. No exact overall rank is predicted; no missions are performed. Planner settings and plans stay on this device.');
+      const legacy=details('Legacy comparison: 0%, 10%, 25% residual scenarios');let legacyBuilt=false;
+      function showLegacy(){if(!legacy.open||legacyBuilt)return;legacyBuilt=true;try{
+        const rows=[0,.1,.25].map(f=>{const r=Lab.run(b,id,local,budget,f,now,{mode:'legacy',allowCatalogStrength:!!catalogInput.checked}),p=r.best;return [Math.round(f*100)+'%',p.score?p.picks.map(x=>Lab.LABELS[x.f]).join(' + '):'No positive crossings',p.score,money(p.cost)];});
+        legacy.appendChild(table(['Legacy residual','~ Best tested categories','~ Crossings','~ Cost'],rows));
+      }catch(error){textLine(legacy,'Legacy comparison unavailable: '+(error.message||String(error)));}}
+      legacy.addEventListener('toggle',showLegacy);showLegacy();
+    }
+    function compare(event){
+      if(event){event.preventDefault?.();event.stopPropagation?.();}
+      if(calculationPending)return;
+      calculationPending=true;clickCount++;
+      actionStatus.textContent='Comparing local intel…';
+      setTimeout(()=>{
+        try{renderResult(true);actionStatus.textContent='Plan updated.';}
+        catch(error){actionStatus.textContent='Comparison could not finish: '+(error.message||String(error));console.error('Sab Advisor comparison:',error);}
+        finally{calculationPending=false;}
+      },0);
+    }
+    function mount(){
+      const id=profileId();if(!jfAuthorized||!id||document.getElementById('jf-sab'))return;
+      activeId=id;const b=board(),base=(b.targets||{})[id]||{},target=Lab.pooledTarget(b,id,localFor(base,id),Date.now()),info=Lab.budgetFor(target,(b.tiv||{})[id],Date.now());
+      const host=node('div');host.id='jf-sab';host.className='jf-block';
+      const isolated=host.attachShadow?host.attachShadow({mode:'open'}):host;
+      const css=node('style',':host{display:block;position:relative;isolation:isolate;color:#eee;background:#111;font:13px Arial,sans-serif;line-height:1.45}*{box-sizing:border-box}button,input,select{font:inherit!important;pointer-events:auto!important;visibility:visible!important;opacity:1!important}button{display:inline-block!important;appearance:auto!important;cursor:pointer!important;background:#e8c766!important;color:#17130a!important;border:1px solid #a88b31!important;border-radius:4px!important;padding:8px 12px!important;min-height:36px!important}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #73b9ff!important;outline-offset:2px}input,select{border:1px solid #777!important;border-radius:3px!important}summary{cursor:pointer;color:#e8c766;padding:7px 0}details{margin:5px 0}details>table{margin-top:5px}table{display:table;width:100%;color:inherit;background:transparent}p{line-height:1.4}p:empty,div:empty,span:empty{display:none}th,td{overflow-wrap:anywhere}summary{font-weight:600}button{padding:5px 9px!important;min-height:32px!important}@media(max-width:540px){th,td{padding:4px!important}input{max-width:100%}}');isolated.appendChild(css);
+      const box=node('div',undefined,'border:2px solid #c9a227;padding:10px;margin:10px 0;max-width:100%;color:inherit;background:inherit;box-sizing:border-box');box.className='jf-block';isolated.appendChild(box);
+      box.appendChild(node('strong','Sab Advisor'));
+
+      const controls=node('div',undefined,'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0');
+      const budgetLabel=node('label','Remaining budget (Gold) ');budgetInput=node('input');budgetInput.type='text';budgetInput.inputMode='numeric';budgetInput.value=info.value===null?'':String(info.value);budgetInput.style.cssText='width:170px;color:#111;background:#fff;padding:4px';budgetLabel.appendChild(budgetInput);controls.appendChild(budgetLabel);
+      const settings=node('details');settings.appendChild(node('summary','Settings'));
+      const modelControls=node('div',undefined,'display:flex;flex-wrap:wrap;gap:8px;align-items:center');settings.appendChild(modelControls);
+      const modeLabel=node('label','Model ');modeInput=node('select');for(const [value,label] of [['units','Unit-aware candidate (all 8)'],['legacy','Legacy residual scenario']]){const option=node('option',label);option.value=value;modeInput.appendChild(option);}modeInput.value='units';modeInput.style.cssText='color:#111;background:#fff;padding:4px';modeLabel.appendChild(modeInput);modelControls.appendChild(modeLabel);
+      const floorLabel=node('label','Legacy residual assumption ');floorContainer=floorLabel;floorContainer.style.display='none';floorInput=node('select');for(const f of [0,.1,.25]){const option=node('option',Math.round(f*100)+'%');option.value=String(f);floorInput.appendChild(option);}floorInput.value='0.1';floorInput.disabled=true;floorInput.style.cssText='color:#111;background:#fff;padding:4px';floorLabel.appendChild(floorInput);modelControls.appendChild(floorLabel);
+      const calculate=node('button','Compare plans');calculate.type='button';calculate.disabled=false;calculate.addEventListener('click',compare);controls.appendChild(calculate);box.appendChild(controls);
+      const estimateLabel=node('label','', 'display:block;margin:7px 0;font-size:12px');catalogInput=node('input');catalogInput.type='checkbox';catalogInput.checked=true;catalogInput.addEventListener('change',compare);estimateLabel.appendChild(catalogInput);estimateLabel.appendChild(node('span',' Use estimated strength when hidden (scenario only)'));settings.appendChild(estimateLabel);
+
+      budgetInput.addEventListener('keydown',event=>{if(event.key==='Enter')compare(event);});
+      budgetInput.addEventListener('change',compare);floorInput.addEventListener('change',compare);modeInput.addEventListener('change',()=>{floorInput.disabled=modeInput.value==='units';floorContainer.style.display=modeInput.value==='units'?'none':'';compare();});
+      const counts=node('details');counts.appendChild(node('summary','Specialist counts — saved or manual for this page'));
+      textLine(counts,'Leave blank to use a recent saved count. A number entered here is a manual scenario for this target and is not saved or uploaded.');
+      for(const f of Object.keys(Lab.SPECIALISTS)){const row=node('label',Lab.LABELS[f]+' / '+Lab.UNIT_LABELS[f]+' ', 'display:block;margin:5px 0'),input=node('input'),saved=Lab.unitFor(target,f,Date.now());input.type='text';input.inputMode='numeric';input.value='';input.placeholder=saved?'Saved: '+num(saved.value):'Unknown — enter known count';input.style.cssText='width:220px;color:#111;background:#fff;padding:4px';input.addEventListener('change',compare);input.addEventListener('keydown',event=>{if(event.key==='Enter')compare(event);});unitInputs[f]=input;row.appendChild(input);counts.appendChild(row);}settings.appendChild(counts);
+      actionStatus=node('p','','font-size:12px;margin:6px 0;color:#e8c766');actionStatus.setAttribute('role','status');actionStatus.setAttribute('aria-live','polite');box.appendChild(actionStatus);
+      budgetNote=node('p',info.text,'font-size:12px;margin:6px 0');box.appendChild(budgetNote);output=node('div');box.appendChild(output);
+      box.appendChild(settings);
+      const hist=document.getElementById('jf-hist'),war=document.getElementById('jf-war');if(hist&&hist.parentNode)hist.parentNode.insertBefore(host,hist);else if(war&&war.parentNode)war.parentNode.insertBefore(host,war.nextSibling);else document.body.appendChild(host);
+      try{renderResult();}catch(error){actionStatus.textContent='Initial comparison could not finish: '+(error.message||String(error));}
+    }
+    if(profileId())setInterval(()=>{if(jfAuthorized)try{mount();renderResult(false);}catch(error){console.error('Sab Advisor refresh:',error);}},15000);
+    return {refresh(){if(jfAuthorized){mount();renderResult(false);}}};
   }
-  if(profileId())setInterval(()=>{if(jfAuthorized)try{mount();renderResult(false);}catch(error){console.error('Sab Advisor refresh:',error);}},15000);
-  return {refresh(){if(jfAuthorized){mount();renderResult(false);}}};
-  }
+
   function sabAdvisor(){
     if(!jfAuthorized||!/\/stats\.php$/i.test(location.pathname)||!/^\d+$/.test(statsId()||''))return;
     if(!jfCombinationPlanner)jfCombinationPlanner=jfCreateCombinationPlanner();
@@ -1237,6 +1182,7 @@ const Lab = (() => {
     var match=bodyText().match(/(?:^|\n)\s*Rank\s*:?\s*([0-9][0-9,]*)(?=\s|$)/i);
     return match?num(match[1]):null;
   }
+
   function targetHistory() {
     var id = statsId();
     if (!id) return;
@@ -1298,7 +1244,7 @@ const Lab = (() => {
     state.histlog[id] = log;
     snap = jfMergeTarget(prevKnown, snap);
     state.targets[id] = snap;
-    // ---- bulletproof baseline: previous reading in log, else last-known snapshot (any age) ----
+
     var baseline = jfGrowthBaseline(log,prevKnown,snap.at);
     var windowMs = baseline ? Math.max(0, snap.at - baseline.at) : 0;
     var entries = [];
@@ -1369,7 +1315,7 @@ const Lab = (() => {
       rows += "<tr><td>Age of newest visible page timestamp (not independently verified)</td><td colspan=\"2\" style=\"text-align:right\">" + ageH + "h old</td></tr>";
     }
     rows+="<tr><td colspan='3'>~ category TIV uses assumed unit prices (SA/DA 750,000 Gold; other categories 1,000,000 Gold) when item prices are unavailable. It is not measured TIV and may differ from the recorded total. Changes cover available observations, not necessarily a full day.</td></tr>";
-    save();
+
     var box = document.createElement("table");
     box.id = "jf-hist";
     box.className = "jf-block";
@@ -1421,6 +1367,7 @@ const Lab = (() => {
     state.tiv[id] = { id: String(id), name: name || ("#" + id), invested: invested, at: Date.now() };
     save();
   }
+
   function jfTivRanking(pool, now) {
     var rows = Object.keys(pool || {}).map(function (k) { return pool[k]; })
       .filter(function (r) { return r && typeof r.invested === "number" && isFinite(r.invested) && r.invested >= 0 && !(r.at && r.at < now - 30 * 86400000); });
@@ -1434,6 +1381,7 @@ const Lab = (() => {
     var total = 0;for (var i = 0; i < rows.length; i++) total += rows[i].invested;
     return {top:rows.slice(0,20),total:total,count:rows.length};
   }
+
   function tivTracker() {
     if (!/base\.php/i.test(location.pathname)) return;
     if (document.getElementById("jf-tiv")) return;
@@ -1485,12 +1433,9 @@ const Lab = (() => {
   }
 
   function jfUpgradeSection(label, text, available, controlLabels) {
-    // Only parse the actual upgrade sections, not the game's advisor tables.
     var accepted=/^(Siege|Fortification|Upgrade (?:Covert|Sentry|Poison|Antidote|Theft|Vigilance) Skill|Increase Experience)$/i;
     if (!accepted.test(label)) return null;
     if (/No More Levels|Upgrade Completed/i.test(text)) return {name:label,maxed:true};
-    // input[type=submit] displays its value, but that price is absent from innerText.
-    // Prefer explicit price labels on upgrade controls; never click the controls.
     var explicit=[];
     (controlLabels||[]).forEach(function(value){
       var match=String(value||"").trim().match(/^([0-9][0-9,]*)\s+Gold$/i);
@@ -1502,6 +1447,7 @@ const Lab = (() => {
     if (!Number.isSafeInteger(cost)||cost<0) return {name:label,unknown:true};
     return {name:label,cost:cost,shortfall:available===null?null:Math.max(0,cost-available)};
   }
+
   function upgradesPlanner() {
     if (!/upgrades\.php/i.test(location.pathname)||document.getElementById("jf-upg")) return;
     var funds=bodyText().match(/Available Funds:\s*([0-9][0-9,]*)\s+Gold/i);
@@ -1511,7 +1457,6 @@ const Lab = (() => {
     var tables=document.querySelectorAll("table");
     for(var i=0;i<tables.length;i++){
       var table=tables[i];
-      // A layout table can contain several upgrades: don't mistake it for one.
       if (table.querySelector("table")) continue;
       var rows=table.querySelectorAll("tr");
       if (!rows.length) continue;
@@ -1572,18 +1517,12 @@ const Lab = (() => {
     var box = document.createElement("div");
     box.id = "jf-stamp";
     box.style.cssText = "font-size:10px;opacity:.65;padding:2px 6px;color:inherit;";
-    //version in sidebar
     box.textContent = `JFWarScout ${currentVersion}` + (lastErr ? " · ERR: " + lastErr : "");
     document.body.appendChild(box);
     jfPlaceInfo();
   }
 
-  // Security: stay completely dark when logged out or timed out. A live session
-  // must show a positive signal (game menu / Command Center); any logoff or
-  // timeout marker, or a login-box password field, shuts the script down.
   function loggedIn() {
-    // Armory may contain confirmation password inputs during a valid game session.
-    // An actual logout link plus the game menu is a stronger session signal.
     var gameMenu = document.querySelector("a[href*='base.php']");
     var logoutLink = document.querySelector("a[href*='logout.php']");
     if (gameMenu && logoutLink) return true;
@@ -1598,6 +1537,7 @@ const Lab = (() => {
     if (/session expired|you must log ?in|you are not logged in|you have been logged out|please log ?in|login to continue/.test(text)) return false;
     return /game time/i.test(text);
   }
+
   var jfApprovalAt = 0;
   var jfApprovalTTL = 5 * 60000;
   function jfForgetApproval() {
@@ -1637,10 +1577,8 @@ const Lab = (() => {
     var wasRunning = jfStarted;
     jfAuthorized = false;
     jfForgetApproval();
-    clearTimeout(shareTimer); clearTimeout(repushTimer); clearTimeout(jfUploadRetryTimer);
     jfShowSync(message);
     if (wasRunning) {
-      // Reload removes injected widgets and their event handlers without touching game actions.
       location.reload();
       return;
     }
@@ -1652,6 +1590,7 @@ const Lab = (() => {
     if (!SITE_TOKEN) { jfLock("Membership: personal key required"); return; }
     httpJson("POST", SITE_PUSH, { action: "membership_check" }, function (status, text) {
       if (serial !== jfCheckSerial) return;
+        console.log("[JFWarScout Membership Check]", { status: status, responseText: text });
       var result = null; try { result = JSON.parse(text); } catch (e) {}
       if (status === 200 && result && result.ok && result.approved === true) {
         jfApprovalAt = Date.now();
@@ -1709,45 +1648,6 @@ const Lab = (() => {
     safe(stamp);
   }
 
-  function boardPack() { return { targets: state.targets || {}, histlog: state.histlog || {}, tiv: state.tiv || {}, weapons: state.weapons || {} }; }
-  function mergeBoard(remote) {
-    if (!remote) return;
-    var targets = remote.targets || {};
-    var STAT_FIELDS = ["sa", "da", "spy", "sentry", "poison", "antidote", "theft", "vigilance"];
-    Object.keys(targets).forEach(function (id) {
-      var snap = targets[id];
-      if (!snap) return;
-      var old = state.targets[id];
-      if (!old) { state.targets[id] = jfMergeTarget({}, snap); return; }
-      state.targets[id] = jfMergeTarget(old, snap);
-    });
-    var histlog = remote.histlog || {};
-    if (!state.histlog) state.histlog = {};
-  if (!state.tiv) state.tiv = {};
-  if (!state.weapons) state.weapons = {};
-  if (!state.nameid) state.nameid = {};
-    Object.keys(histlog).forEach(function (id) {
-      var mine = state.histlog[id] || [];
-      var seen = {};
-      mine.concat(histlog[id] || []).forEach(function (row) { if (row && row.at) seen[row.at] = row; });
-      state.histlog[id] = Object.keys(seen).sort().map(function (ts) { return seen[ts]; });
-    });
-    var tiv = remote.tiv || {};
-    if (!state.tiv) state.tiv = {};
-  if (!state.weapons) state.weapons = {};
-  if (!state.nameid) state.nameid = {};
-    Object.keys(tiv).forEach(function (id) {
-      var row = tiv[id];
-      if (!row || typeof row.invested !== "number" || !isFinite(row.invested) || row.invested < 0) return;
-      var prev = state.tiv[id];
-      if (!prev || (row.at || 0) >= (prev.at || 0)) state.tiv[id] = row;
-    });
-    var weaponsR = remote.weapons || {};
-    Object.keys(weaponsR).forEach(function (n) {
-      if (weaponsR[n]) state.weapons[n] = jfMergeTarget(state.weapons[n], weaponsR[n]);
-    });
-    save();
-  }
   function httpJson(method, url, body, done, headers) {
     var finished = false, fallbackStarted = false;
     function complete(status, text) {
@@ -1761,7 +1661,6 @@ const Lab = (() => {
     function browserFallback() {
       if (finished || fallbackStarted) return;
       fallbackStarted = true;
-      // Only the faction API supports this credential-free CORS fallback.
       if (url !== SITE_PUSH || typeof fetch !== "function" || typeof AbortController !== "function") { complete(0, ""); return; }
       var controller = new AbortController();
       var timer = setTimeout(function () { controller.abort(); complete(0, ""); }, 30000);
@@ -1780,132 +1679,159 @@ const Lab = (() => {
       } catch (e) { browserFallback(); }
     } else browserFallback();
   }
+
+  function boardPack() {
+    return { targets: state.targets || {}, histlog: state.histlog || {}, tiv: state.tiv || {}, weapons: state.weapons || {} };
+  }
+
+  function mergeBoard(remote) {
+    if (!remote) return;
+    var targets = remote.targets || {};
+    Object.keys(targets).forEach(function (id) {
+      var snap = targets[id];
+      if (!snap) return;
+      var old = state.targets[id];
+      state.targets[id] = old ? jfMergeTarget(old, snap) : jfMergeTarget({}, snap);
+    });
+
+    var histlog = remote.histlog || {};
+    Object.keys(histlog).forEach(function (id) {
+      var mine = state.histlog[id] || [];
+      var seen = {};
+      mine.concat(histlog[id] || []).forEach(function (row) { if (row && row.at) seen[row.at] = row; });
+      state.histlog[id] = Object.keys(seen).sort().map(function (ts) { return seen[ts]; });
+    });
+
+    var tiv = remote.tiv || {};
+    Object.keys(tiv).forEach(function (id) {
+      var row = tiv[id];
+      if (!row || typeof row.invested !== "number" || !isFinite(row.invested) || row.invested < 0) return;
+      var prev = state.tiv[id];
+      if (!prev || (row.at || 0) >= (prev.at || 0)) state.tiv[id] = row;
+    });
+
+    var weaponsR = remote.weapons || {};
+    Object.keys(weaponsR).forEach(function (n) {
+      if (weaponsR[n]) state.weapons[n] = jfMergeTarget(state.weapons[n], weaponsR[n]);
+    });
+  }
+
   function pullShare(done) {
     if (!jfAuthorized) { if (done) done(); return; }
-    var finish = function (status, text) {
+    if (!SITE_TOKEN) { jfShowSync("Sharing: not connected"); if (done) done(); return; }
+    httpJson("POST", SITE_PUSH, { action: "warscout_pull" }, function (status, text) {
+      if (!jfAuthorized) return;
       if (status >= 200 && status < 300 && text) {
         try {
-          if (SHARE_MODE === "gist") {
-            var gist = JSON.parse(text);
-            var f = gist.files && gist.files["jf-board.json"];
-            if (f && f.content) mergeBoard(JSON.parse(f.content));
+          var parsed = JSON.parse(text);
+          if (parsed && parsed.ok && parsed.board) {
+            mergeBoard(parsed.board);
+            jfShowSync(jfLastUpload || "Sharing: connected; upload pending");
           } else {
-            mergeBoard(JSON.parse(text));
+            jfShowSync("Sharing: unexpected server response");
           }
         } catch (e) {}
       }
+      if (status === 401 || status === 403) { jfLock(jfAccessError(status, text)); return; }
+      else if (status < 200 || status >= 300) jfShowSync("Sharing: connected; sync unavailable (" + status + ")");
       if (done) done();
-    };
-    if (SHARE_MODE === "site") {
-      if (!SITE_TOKEN) { jfShowSync("Sharing: not connected"); if (done) done(); return; }
-      httpJson("POST", SITE_PUSH, { action: "warscout_pull" }, function (status, text) {
-        if (!jfAuthorized) return;
-        if (status >= 200 && status < 300 && text) {
-          try {
-            var parsed = JSON.parse(text);
-            if (parsed && parsed.ok && parsed.board) { mergeBoard(parsed.board); jfShowSync(jfLastUpload || "Sharing: connected; upload pending"); }
-            else jfShowSync("Sharing: unexpected server response");
-          } catch (e) {}
-        }
-        if (status === 401 || status === 403) { jfLock(jfAccessError(status, text)); return; }
-        else if (status < 200 || status >= 300) jfShowSync("Sharing: connected; sync unavailable (" + status + ")");
-        if (done) done();
-      }, { "X-JF-Script-Key": SITE_TOKEN });
-    } else if (SHARE_MODE === "gist" && GIST_ID && GIST_TOKEN) {
-      httpJson("GET", "https://api.github.com/gists/" + GIST_ID, null, finish, { "Authorization": "token " + GIST_TOKEN });
-    } else {
-      httpJson("GET", "https://jsonblob.com/api/jsonBlob/" + ALLIANCE_SHARE, null, finish);
-    }
+    }, { "X-JF-Script-Key": SITE_TOKEN });
   }
+
   var lastPushRaw = "";
   var lastPushAt = 0;
   var repushTimer = 0;
   var jfUploadBusy = false;
   var jfUploadRetry = 0;
   var jfUploadRetryTimer = 0;
+
   function pushToSite() {
     if (!jfAuthorized) return;
     if (!SITE_TOKEN) { jfShowSync("Sharing: not connected"); return; }
     if (jfUploadBusy) return;
     jfUploadBusy = true;
-    httpJson("POST", SITE_PUSH, Object.assign({action:"warscout_push"},boardPack()), function(status,text) {
+    httpJson("POST", SITE_PUSH, Object.assign({ action: "warscout_push" }, boardPack()), function (status, text) {
       jfUploadBusy = false;
       if (!jfAuthorized) return;
       if (status === 401 || status === 403) { jfLock(jfAccessError(status, text)); return; }
-      var result = null; try { result = JSON.parse(text); } catch(e) {}
+      var result = null; try { result = JSON.parse(text); } catch (e) {}
       if (status >= 200 && status < 300 && result && result.ok) {
         jfUploadRetry = 0; clearTimeout(jfUploadRetryTimer);
-        jfLastUpload = "Sharing: last upload " + new Date().toLocaleTimeString(); jfShowSync(jfLastUpload);
+        jfLastUpload = "Sharing: last upload " + new Date().toLocaleTimeString();
+        jfShowSync(jfLastUpload);
       } else {
-        lastPushRaw = ""; // A failed upload must be retryable on the next observed page.
+        lastPushRaw = "";
         if ((status === 0 || status === 408 || status === 429 || status >= 500) && jfUploadRetry < 3) {
           var delay = [10000, 30000, 60000][jfUploadRetry++];
           jfShowSync("Sharing: upload delayed (" + status + "); retry " + jfUploadRetry + "/3 in " + (delay / 1000) + "s");
           clearTimeout(jfUploadRetryTimer);
           jfUploadRetryTimer = setTimeout(pushToSite, delay);
-        } else jfShowSync("Sharing: upload failed (" + status + "); local data kept; refresh to retry");
+        } else {
+          jfShowSync("Sharing: upload failed (" + status + "); refresh to retry");
+        }
       }
-    }, {"X-JF-Script-Key":SITE_TOKEN});
+    }, { "X-JF-Script-Key": SITE_TOKEN });
   }
+
   function pushShare() {
     if (!jfAuthorized) return;
     var raw = JSON.stringify(boardPack());
     var now = Date.now();
     if (raw === lastPushRaw) return;
-    if (now - lastPushAt < 60000) { clearTimeout(repushTimer); repushTimer = setTimeout(pushShare, 60000 - (now - lastPushAt)); return; }
+    if (now - lastPushAt < 60000) {
+      clearTimeout(repushTimer);
+      repushTimer = setTimeout(pushShare, 60000 - (now - lastPushAt));
+      return;
+    }
     lastPushRaw = raw;
     lastPushAt = now;
-    if (SHARE_MODE === "site") { pushToSite(); return; }
-    if (SHARE_MODE === "gist" && GIST_ID && GIST_TOKEN) {
-      httpJson("POST", "https://api.github.com/gists/" + GIST_ID, { files: { "jf-board.json": { content: JSON.stringify(boardPack()) } } }, function () {}, { "Authorization": "token " + GIST_TOKEN });
-    } else {
-      httpJson("PUT", "https://jsonblob.com/api/jsonBlob/" + ALLIANCE_SHARE, boardPack(), function () {});
-    }
     pushToSite();
   }
+
   var shareTimer = 0;
-  function scheduleShare() { if (!jfAuthorized) return; clearTimeout(shareTimer); shareTimer = setTimeout(pushShare, 1500); }
+  function scheduleShare() {
+    if (!jfAuthorized) return;
+    clearTimeout(shareTimer);
+    shareTimer = setTimeout(pushShare, 1500);
+  }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", jfStart);
   else jfStart();
 
-    // updater
-    GM_xmlhttpRequest({
-        method: 'GET',
-        url: CONFIG_URL,
+  // Updater
+  GM_xmlhttpRequest({
+      method: 'GET',
+      url: CONFIG_URL,
+      onload: function (response) {
+          if (response.status !== 200) return;
 
-        onload: function (response) {
-            if (response.status !== 200) return;
+          try {
+              const config = JSON.parse(response.responseText);
+              const remoteVersion = String(config.version ?? '');
 
-            try {
-                const config = JSON.parse(response.responseText);
-                const remoteVersion = String(config.version ?? '');
+              if (remoteVersion && remoteVersion !== currentVersion) {
+                  const history = config.history?.[remoteVersion];
 
-                if (remoteVersion && remoteVersion !== currentVersion) {
-                    const history = config.history?.[remoteVersion];
+                  const updateNotes = Array.isArray(history)
+                      ? '\n\nUpdates:\n' + history.map(entry => '- ' + entry).join('\n')
+                      : '';
 
-                    const updateNotes = Array.isArray(history)
-                        ? '\n\nUpdates:\n' + history.map(entry => '- ' + entry).join('\n')
-                        : '';
+                  const message =
+                      'Your warscout version is out of date click OK to update.\n\n' +
+                      'Installed version: ' + currentVersion + '\n' +
+                      'Required version: ' + remoteVersion +
+                      updateNotes;
 
-                    const message =
-                        'Your warscout version is out of date click OK to update.\n\n' +
-
-                        'Installed version: ' + currentVersion + '\n' +
-                        'Required version: ' + remoteVersion +
-                        updateNotes;
-
-                    if (confirm(message)) {
-                        window.location.href = REDIRECT_URL;
-                    }
-                }
-            } catch (error) {
-                console.error('[Version Checker] Error:', error);
-            }
-        },
-
-        onerror: function () {
-            console.error('[Version Checker] Could not retrieve version configuration.');
-        }
-    });
+                  if (confirm(message)) {
+                      window.location.href = REDIRECT_URL;
+                  }
+              }
+          } catch (error) {
+              console.error('[Version Checker] Error:', error);
+          }
+      },
+      onerror: function () {
+          console.error('[Version Checker] Could not retrieve version configuration.');
+      }
+  });
 })();
