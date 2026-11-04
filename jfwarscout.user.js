@@ -32,7 +32,7 @@
 
   var KEY = "jedi_board_v7";
   var CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
-  var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout.user.js';
+  var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout2.user.js';
   var ALLIANCE_SHARE = "jedi-faction-era23";
   var currentVersion = GM_info.script.version;
   // Sync backend. "jsonblob" (default, free but not permanent) or "gist"
@@ -1630,7 +1630,7 @@ const Lab = (() => {
     var reply = null; try { reply = JSON.parse(text); } catch (e) {}
     if (status === 401 && reply && reply.error === "Script key is invalid or member access was removed.") return "Membership: HTTP 401 — website rejected key or member approval";
     if (status === 403 && reply && reply.error === "Origin not permitted.") return "Membership: HTTP 403 — browser request origin blocked";
-    if (status === 403 && reply && reply.error === "This key only permits WarScout intel sharing.") return "Membership: HTTP 403 — upload warscout_api.php membership update";
+    if (status === 403 && reply && reply.error === "This key only permits WarScout intel sharing.") return "Membership: HTTP 403 — upload warscout_api2.php membership update";
     return "Membership: HTTP " + status + " — request blocked; check website/Cloudflare response";
   }
   function jfLock(message) {
