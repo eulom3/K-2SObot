@@ -2,7 +2,7 @@
 // @name        JFWarScout
 // Built by Jedi Faction. Free for allied use with attribution.
 // @namespace   https://www.kingsofchaos.com/
-// @version     9.1.21
+// @version     9.1.21a
 // @default      JFWarScout v9.0.0 — paste this entire build into Stay/Tampermonkey as-is.
 // @author      Jedi Faction
 // @description Jedi Faction shared recon, compact Sab Advisor, war stats and trackers. One script for Stay and Tampermonkey.
@@ -1572,7 +1572,8 @@ const Lab = (() => {
     var box = document.createElement("div");
     box.id = "jf-stamp";
     box.style.cssText = "font-size:10px;opacity:.65;padding:2px 6px;color:inherit;";
-    box.textContent = "JFWarScout 9.1.20-JF" + (lastErr ? " · ERR: " + lastErr : "");
+    //version in sidebar
+    box.textContent = `JFWarScout ${currentVersion}` + (lastErr ? " · ERR: " + lastErr : "");
     document.body.appendChild(box);
     jfPlaceInfo();
   }
