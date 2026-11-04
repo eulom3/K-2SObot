@@ -1,19 +1,19 @@
 // ==UserScript==
-// @name         Version Checker
-// @namespace    FLG
+// @name         JF Version update test
+// @namespace    JediFaaction
 // @version      9.0.1
 // @description  Checks the script version against remote configuration
 // @match        *://www.kingsofchaos.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_info
-// @connect      15.204.44.25
+// @connect      jfactiongaming.com
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const CONFIG_URL = 'http://15.204.44.25:10016/script_config.json';
-    const REDIRECT_URL = 'http://15.204.44.25:10016/jfwarscout.user.js';
+    const CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
+    const REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout.user.js';
 
     const currentVersion = GM_info.script.version;
 
@@ -36,11 +36,11 @@
                         : '';
 
                     const message =
-                        'This script version is out of date.\n\n' +
+                        'Your warscout version is out of date click OK to update.\n\n' +
+
                         'Installed version: ' + currentVersion + '\n' +
                         'Required version: ' + remoteVersion +
-                        updateNotes +
-                        '\n\nClick OK to get the updated script.';
+                        updateNotes;
 
                     if (confirm(message)) {
                         window.location.href = REDIRECT_URL;
