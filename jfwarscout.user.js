@@ -37,7 +37,7 @@
   var CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
   var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout2.user.js';
   var currentVersion = GM_info.script.version;
-  var SITE_PUSH = "https://jfactiongaming.com/warscout2_api.php";
+  var SITE_PUSH = "https://jfactiongaming.com/warscout_api.php";
   var SITE_TOKEN = "";
   try { SITE_TOKEN = typeof GM_getValue === "function" ? GM_getValue("JF_SCRIPT_ACCESS_KEY", "") : ""; } catch (e) {}
   var jfSyncText = SITE_TOKEN ? "Sharing: connecting…" : "Sharing: not connected";
