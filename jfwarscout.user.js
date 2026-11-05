@@ -35,9 +35,9 @@
   var jfStatusOnly = /\/(?:warlist|farmlist)\.php/i.test(location.pathname);
 
   var CONFIG_URL = 'https://jfactiongaming.com/script_config.json';
-  var REDIRECT_URL = 'http://jfactiongaming.com/jfwarscout2.user.js';
+  var REDIRECT_URL = 'https://jfactiongaming.com/jfwarscout.user.js?v=' + Date.now();
   var currentVersion = GM_info.script.version;
-  var SITE_PUSH = "https://jfactiongaming.com/warscout_api.php";
+  var SITE_PUSH = "https://jfactiongaming.com/warscout2_api.php";
   var SITE_TOKEN = "";
   try { SITE_TOKEN = typeof GM_getValue === "function" ? GM_getValue("JF_SCRIPT_ACCESS_KEY", "") : ""; } catch (e) {}
   var jfSyncText = SITE_TOKEN ? "Sharing: connecting…" : "Sharing: not connected";
@@ -262,14 +262,14 @@
     box.id = "jf-war";
     box.className = "jf-block";
     box.innerHTML = "<tr><td class=\"jf-h\" colspan=\"2\" style=\"" + style + "\">War Stats</td></tr>" +
-      line("SA estimate", da) +
-      line("DA estimate", sa) +
-      line("Spy estimate", sentry === null ? null : Math.ceil(sentry / 1.5)) +
-      line("Sentry estimate", spy === null ? null : Math.ceil(spy * 1.5)) +
-      line("Poison estimate", antidote === null ? null : Math.ceil(antidote / 2)) +
-      line("Antidote estimate", poison === null ? null : Math.ceil(poison * 2)) +
-      line("Theft estimate", vigilance === null ? null : Math.ceil(vigilance * 1.5)) +
-      line("Vigilance estimate", theft === null ? null : Math.ceil(theft / 1.5)) +
+      line("SA required", da) +
+      line("DA required", sa) +
+      line("Spy required", sentry === null ? null : Math.ceil(sentry / 1.5)) +
+      line("Sentry required", spy === null ? null : Math.ceil(spy * 1.5)) +
+      line("Poison required", antidote === null ? null : Math.ceil(antidote / 2)) +
+      line("Antidote required", poison === null ? null : Math.ceil(poison * 2)) +
+      line("Theft required", vigilance === null ? null : Math.ceil(vigilance * 1.5)) +
+      line("Vigilance required", theft === null ? null : Math.ceil(theft / 1.5)) +
       "<tr><td colspan='2'>Reference estimates from stored/displayed target stats. The game's success thresholds are unverified; these are not guaranteed requirements. Zero does not guarantee success.</td></tr>";
     var sriTable = sri ? tableFrom(sri) : null;
     var host = recent ? tableFrom(recent) : null;
@@ -1738,7 +1738,10 @@
       if (!jfAuthorized) return;
       if (status >= 200 && status < 300 && text) {
         try {
-          var parsed = JSON.parse(text);
+          var cleanText = text;
+          var jsonStart = cleanText.indexOf('{"ok":');
+          if (jsonStart !== -1) cleanText = cleanText.substring(jsonStart);
+          var parsed = JSON.parse(cleanText);
           if (parsed && parsed.ok && parsed.board) {
             mergeBoard(parsed.board);
             jfShowSync(jfLastUpload || "Sharing: connected; upload pending");
@@ -1824,18 +1827,35 @@
   GM_xmlhttpRequest({
       method: 'GET',
       url: CONFIG_URL,
-      onload: function (response) {
-          if (response.status !== 200) return;
+     onload: function (response) {
+          console.log("[Version Checker] Status:", response.status);
+          if (response.status !== 200) {
+              console.warn("[Version Checker] Failed with status:", response.status, response.responseText);
+              return;
+          }
 
           try {
-              const config = JSON.parse(response.responseText);
-              const remoteVersion = String(config.version ?? '');
+              const cleanText = response.responseText.replace(/^\uFEFF/, '').trim();
+              const config = JSON.parse(cleanText);
+              const remoteVersion = String(config.version || config.remoteVersion || '').trim();
 
-              if (remoteVersion && remoteVersion !== currentVersion) {
-                  const history = config.history?.[remoteVersion];
+              console.log("[Version Checker] Installed:", currentVersion, "| Remote:", remoteVersion);
 
-                  const updateNotes = Array.isArray(history)
-                      ? '\n\nUpdates:\n' + history.map(entry => '- ' + entry).join('\n')
+              if (!remoteVersion) {
+                  console.warn("[Version Checker] No version key found in script_config.json");
+                  return;
+              }
+
+              if (remoteVersion === currentVersion.trim()) {
+                  console.log("[Version Checker] Script is up to date.");
+                  return;
+              }
+
+              if (remoteVersion !== currentVersion.trim()) {
+
+                  const hist = config.history && config.history[remoteVersion];
+                  const updateNotes = Array.isArray(hist)
+                      ? '\n\nUpdates:\n' + hist.map(entry => '- ' + entry).join('\n')
                       : '';
 
                   const message =
@@ -1852,8 +1872,11 @@
               console.error('[Version Checker] Error:', error);
           }
       },
-      onerror: function () {
-          console.error('[Version Checker] Could not retrieve version configuration.');
+      onerror: function (err) {
+          console.error('[Version Checker] Request blocked or network error:', err);
+      },
+      ontimeout: function () {
+          console.error('[Version Checker] Request timed out reaching:', CONFIG_URL);
       }
   });
 })();
